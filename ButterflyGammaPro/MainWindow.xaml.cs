@@ -1,10 +1,9 @@
 using System;
-using System.Collections.ObjectModel;
-using System.ComponentModel;
+using System.Collections.Generic;
 using System.Diagnostics;
-using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -16,51 +15,39 @@ using ButterflyGammaPro.Views;
 
 namespace ButterflyGammaPro {
     public partial class MainWindow : Window {
-        private AppConfig _config;
-        private readonly GammaEngine _gammaEngine;
-        private readonly HotKeyManager _hotKeyManager;
-        private OsdWindow? _osdWindow;
-        private TrayService? _trayService;
+        private AppConfig _config = new();
         private GammaProfile? _selectedProfile;
+        private readonly GammaEngine _gammaEngine = new();
+        private readonly HotKeyManager _hotKeyManager = new();
+        private TrayService? _trayService;
+        private OsdWindow? _osdWindow;
         private bool _isUpdatingUi = false;
         private bool _isExplicitExit = false;
 
+        // 通道调节模式：0 = 全通道 (All RGB), 1 = 红色 (Red), 2 = 绿色 (Green), 3 = 蓝色 (Blue)
+        private int _channelMode = 0;
+
         public MainWindow() {
             InitializeComponent();
-            try {
-                foreach (var p in Process.GetProcessesByName("gapa")) {
-                    p.Kill();
-                }
-            } catch {}
-
-            _config = ConfigManager.Load();
-            _gammaEngine = new GammaEngine();
-            _hotKeyManager = new HotKeyManager();
-
-            this.Loaded += MainWindow_Loaded;
-            this.Closing += MainWindow_Closing;
+            Loaded += MainWindow_Loaded;
+            Closing += MainWindow_Closing;
         }
 
         private void MainWindow_Loaded(object sender, RoutedEventArgs e) {
-            try { _osdWindow = new OsdWindow(); } catch {}
+            _config = ConfigManager.Load();
+            _gammaEngine.AntiResetEnabled = _config.AntiResetLock;
+            _gammaEngine.TargetMonitorId = string.IsNullOrEmpty(_config.TargetMonitor) ? "ALL" : _config.TargetMonitor;
 
-            _isUpdatingUi = true;
-            CmbHotKey.Items.Clear();
-            foreach (var k in HotKeyManager.KeyMap.Keys) {
-                CmbHotKey.Items.Add(k);
-            }
-            _isUpdatingUi = false;
+            PopulateHotKeyCombo();
 
             IntPtr hwnd = new WindowInteropHelper(this).Handle;
             var source = HwndSource.FromHwnd(hwnd);
             if (source != null) {
-                _hotKeyManager.Initialize(hwnd, source);
-                source.AddHook((IntPtr h, int msg, IntPtr wParam, IntPtr lParam, ref bool handled) => {
-                    _trayService?.HandleMessage(msg, wParam, lParam);
-                    return IntPtr.Zero;
-                });
+                source.AddHook(WndProcHook);
             }
 
+            // 初始化零延迟底层键盘与鼠标钩子专属线程
+            _hotKeyManager.Initialize();
             _hotKeyManager.HotKeyPressed += (p) => Dispatcher.Invoke(() => ActivateProfile(p));
 
             InitTrayService(hwnd);
@@ -70,8 +57,139 @@ namespace ButterflyGammaPro {
             ChkTransition.IsChecked = _config.EnableTransition;
             ChkAntiReset.IsChecked = _config.AntiResetLock;
 
+            InitMonitorsList();
             RefreshProfileList();
             SelectProfile(_config.Profiles.FirstOrDefault(p => p.VirtualKey == 0x77) ?? _config.Profiles.FirstOrDefault());
+
+            // 启动 3.5 秒后在后台静默检测更新 (支持国内镜像加速)
+            _ = Task.Run(async () => {
+                await Task.Delay(3500);
+                try {
+                    var updateInfo = await UpdateService.CheckForUpdatesAsync();
+                    if (updateInfo != null && updateInfo.HasUpdate) {
+                        Dispatcher.Invoke(() => ShowUpdateDialog(updateInfo));
+                    }
+                } catch { }
+            });
+        }
+
+        private IntPtr WndProcHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled) {
+            // 1. 系统级单实例广播唤醒消息处理 (彻底解决隐藏至托盘时无法定位窗口的假死)
+            if (msg == App.WM_SHOWME) {
+                ShowWindow();
+                handled = true;
+                return IntPtr.Zero;
+            }
+
+            // 2. 硬件显示配置变动监听 (WM_DISPLAYCHANGE: 0x007E - 游戏切全屏/改分辨率时秒级重置滤镜)
+            if (msg == 0x007E) {
+                _gammaEngine.BackupInitialRamps();
+                _gammaEngine.ReapplyActiveProfileImmediately();
+                return IntPtr.Zero;
+            }
+
+            // 3. 应用程序激活状态切换 (WM_ACTIVATEAPP: 0x001C)
+            if (msg == 0x001C && wParam != IntPtr.Zero) {
+                _gammaEngine.CheckAndRestoreTargetRamps();
+            }
+
+            // 4. 托盘消息传递
+            _trayService?.HandleMessage(msg, wParam, lParam);
+            return IntPtr.Zero;
+        }
+
+        private void PopulateHotKeyCombo() {
+            _isUpdatingUi = true;
+            CmbHotKey.Items.Clear();
+            CmbHotKey.Items.Add("无");
+            CmbHotKey.Items.Add("鼠标侧键下 (Mouse 4)");
+            CmbHotKey.Items.Add("鼠标侧键上 (Mouse 5)");
+
+            for (int i = 1; i <= 12; i++) {
+                CmbHotKey.Items.Add($"F{i}");
+            }
+            for (int i = 1; i <= 9; i++) {
+                CmbHotKey.Items.Add($"数字 {i}");
+            }
+            CmbHotKey.Items.Add("数字 0");
+            _isUpdatingUi = false;
+        }
+
+        private void InitMonitorsList() {
+            var monitors = DisplayManager.GetActiveMonitors();
+            var items = new List<DisplayMonitorInfo> {
+                new DisplayMonitorInfo { DisplayId = "ALL", Title = "🌐 全部显示器 (所有屏幕同步)" },
+                new DisplayMonitorInfo { DisplayId = "PRIMARY", Title = "🖥️ 仅主显示器 (竞技游戏主屏专用)" }
+            };
+            items.AddRange(monitors);
+
+            _isUpdatingUi = true;
+            CmbMonitors.ItemsSource = items;
+
+            var match = items.FirstOrDefault(i => string.Equals(i.DisplayId, _config.TargetMonitor, StringComparison.OrdinalIgnoreCase));
+            if (match != null) {
+                CmbMonitors.SelectedValue = match.DisplayId;
+            } else {
+                CmbMonitors.SelectedValue = "ALL";
+            }
+            _isUpdatingUi = false;
+
+            UpdateHdrWarningBadge();
+        }
+
+        private void UpdateHdrWarningBadge() {
+            var monitors = DisplayManager.GetActiveMonitors();
+            bool targetHdr = false;
+
+            if (string.Equals(_config.TargetMonitor, "ALL", StringComparison.OrdinalIgnoreCase)) {
+                targetHdr = monitors.Any(m => m.IsHdrEnabled);
+            } else if (string.Equals(_config.TargetMonitor, "PRIMARY", StringComparison.OrdinalIgnoreCase)) {
+                var p = monitors.Find(m => m.IsPrimary);
+                targetHdr = p != null && p.IsHdrEnabled;
+            } else {
+                var match = monitors.Find(m => string.Equals(m.DeviceName, _config.TargetMonitor, StringComparison.OrdinalIgnoreCase));
+                targetHdr = match != null && match.IsHdrEnabled;
+            }
+
+            BadgeHdrWarning.Visibility = targetHdr ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private void BadgeHdrWarning_MouseDown(object sender, MouseButtonEventArgs e) {
+            try {
+                Process.Start(new ProcessStartInfo {
+                    FileName = "ms-settings:display",
+                    UseShellExecute = true
+                });
+            } catch { }
+        }
+
+        private void CmbMonitors_SelectionChanged(object sender, SelectionChangedEventArgs e) {
+            if (_isUpdatingUi) return;
+            string? targetId = CmbMonitors.SelectedValue as string;
+            if (!string.IsNullOrEmpty(targetId)) {
+                SelectTargetMonitor(targetId);
+            }
+        }
+
+        private void BtnRefreshMonitors_Click(object sender, RoutedEventArgs e) {
+            _gammaEngine.BackupInitialRamps();
+            InitMonitorsList();
+            var list = DisplayManager.GetActiveMonitors();
+            TxtStatus.Text = $"已刷新显示器：检测到 {list.Count} 台物理屏幕";
+            UpdateTrayMenu();
+        }
+
+        private void SelectTargetMonitor(string id) {
+            _config.TargetMonitor = id;
+            _gammaEngine.SetTargetMonitor(id);
+            ConfigManager.Save(_config);
+
+            _isUpdatingUi = true;
+            CmbMonitors.SelectedValue = id;
+            _isUpdatingUi = false;
+
+            UpdateHdrWarningBadge();
+            UpdateTrayMenu();
         }
 
         private void InitTrayService(IntPtr hwnd) {
@@ -98,6 +216,7 @@ namespace ButterflyGammaPro {
 
             menu.Items.Add(new Separator { Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#334155")) });
 
+            // 滤镜方案列表
             foreach (var p in _config.Profiles) {
                 var prof = p;
                 string label = prof.VirtualKey > 0 ? $"{prof.Name} ({prof.KeyName})" : prof.Name;
@@ -109,6 +228,7 @@ namespace ButterflyGammaPro {
 
             menu.Items.Add(new Separator { Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#334155")) });
 
+            // 目标屏幕子菜单
             var miTargetMon = new MenuItem { Header = "🖥️ 目标屏幕", Foreground = Brushes.White };
             var miAll = new MenuItem { Header = "🌐 全部显示器 (所有屏幕同步)", IsChecked = string.Equals(_config.TargetMonitor, "ALL", StringComparison.OrdinalIgnoreCase) };
             miAll.Click += (s, e) => SelectTargetMonitor("ALL");
@@ -126,6 +246,8 @@ namespace ButterflyGammaPro {
                 miTargetMon.Items.Add(miMon);
             }
             menu.Items.Add(miTargetMon);
+
+            menu.Items.Add(new Separator { Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#334155")) });
 
             var miSettings = new MenuItem { Header = "⚙️ 关闭按钮行为", Foreground = Brushes.White };
             var miAsk = new MenuItem { Header = "每次询问", IsChecked = !_config.RememberCloseChoice || _config.CloseBehavior == 0 };
@@ -161,18 +283,15 @@ namespace ButterflyGammaPro {
             if (!result.AllSucceeded && result.Conflicts.Count > 0) {
                 DotStatus.Fill = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#F59E0B"));
                 TxtStatus.Text = "⚠️ 热键冲突: " + string.Join("; ", result.Conflicts);
-                TxtStatus.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#F59E0B"));
             } else {
                 DotStatus.Fill = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#10B981"));
-                TxtStatus.Text = "状态：就绪，硬件色彩引擎与热键已激活";
-                TxtStatus.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#94A3B8"));
+                TxtStatus.Text = "状态：就绪，零延迟底层钩子已激活";
             }
         }
 
         private void RefreshProfileList() {
-            ProfileList.ItemsSource = null;
-            ProfileList.ItemsSource = _config.Profiles;
-            UpdateTrayMenu();
+            ListProfiles.ItemsSource = null;
+            ListProfiles.ItemsSource = _config.Profiles;
         }
 
         private void SelectProfile(GammaProfile? profile) {
@@ -181,187 +300,282 @@ namespace ButterflyGammaPro {
             _isUpdatingUi = true;
 
             TxtProfileName.Text = profile.Name;
-            CmbHotKey.SelectedItem = profile.KeyName;
+            CmbHotKey.SelectedItem = string.IsNullOrEmpty(profile.KeyName) ? "无" : profile.KeyName;
 
-            double g = profile.Red.Gamma / 100.0;
-            TxtGammaVal.Text = g.ToString("0.00", CultureInfo.InvariantCulture);
-            SliderGamma.Value = Math.Clamp(profile.Red.Gamma, SliderGamma.Minimum, SliderGamma.Maximum);
+            SliderBlackEq.Value = profile.BlackEqualizer;
+            TxtBlackEqVal.Text = profile.BlackEqualizer.ToString();
 
-            TxtContrastVal.Text = profile.Red.Contrast.ToString();
-            SliderContrast.Value = Math.Clamp(profile.Red.Contrast, SliderContrast.Minimum, SliderContrast.Maximum);
+            SliderHighlight.Value = profile.HighlightRolloff;
+            TxtHighlightVal.Text = profile.HighlightRolloff.ToString();
 
-            TxtBrightnessVal.Text = profile.Red.Brightness.ToString();
-            SliderBrightness.Value = Math.Clamp(profile.Red.Brightness, SliderBrightness.Minimum, SliderBrightness.Maximum);
+            UpdateChannelSlidersFromProfile();
 
             _isUpdatingUi = false;
         }
 
-        private void ActivateProfile(GammaProfile profile) {
-            foreach (var p in _config.Profiles) p.IsActive = (p.Id == profile.Id);
-            RefreshProfileList();
+        private void UpdateChannelSlidersFromProfile() {
+            if (_selectedProfile == null) return;
+            ColorChannel ch = _channelMode switch {
+                1 => _selectedProfile.Red,
+                2 => _selectedProfile.Green,
+                3 => _selectedProfile.Blue,
+                _ => _selectedProfile.Red
+            };
 
-            _gammaEngine.ApplyProfile(profile, immediate: !_config.EnableTransition);
-            _config.ActiveProfileId = profile.Id;
+            SliderGamma.Value = ch.Gamma;
+            TxtGammaVal.Text = (ch.Gamma / 100.0).ToString("F2");
 
-            if (_config.EnableOsd && _osdWindow != null) {
-                _osdWindow.ShowProfile(profile);
-            }
+            SliderContrast.Value = ch.Contrast;
+            TxtContrastVal.Text = ch.Contrast.ToString();
 
-            if (_selectedProfile?.Id == profile.Id) SelectProfile(profile);
+            SliderBrightness.Value = ch.Brightness;
+            TxtBrightnessVal.Text = ch.Brightness.ToString();
         }
 
-        private void ProfileCard_Click(object sender, MouseButtonEventArgs e) {
-            if ((sender as FrameworkElement)?.DataContext is GammaProfile p) {
+        private void RdoChan_Checked(object sender, RoutedEventArgs e) {
+            if (_isUpdatingUi) return;
+            if (RdoChanAll.IsChecked == true) _channelMode = 0;
+            else if (RdoChanRed.IsChecked == true) _channelMode = 1;
+            else if (RdoChanGreen.IsChecked == true) _channelMode = 2;
+            else if (RdoChanBlue.IsChecked == true) _channelMode = 3;
+
+            _isUpdatingUi = true;
+            UpdateChannelSlidersFromProfile();
+            _isUpdatingUi = false;
+        }
+
+        private void BtnPresetNvg_Click(object sender, RoutedEventArgs e) {
+            if (_selectedProfile == null) return;
+            // 压制夜视仪绿光：适度降低绿光 Gamma，拉升暗部平衡与防刺眼
+            _selectedProfile.Green.Gamma = Math.Max(50, _selectedProfile.Red.Gamma - 35);
+            _selectedProfile.Green.Contrast = Math.Max(80, _selectedProfile.Red.Contrast - 10);
+            _selectedProfile.BlackEqualizer = Math.Max(_selectedProfile.BlackEqualizer, 40);
+            _selectedProfile.HighlightRolloff = Math.Max(_selectedProfile.HighlightRolloff, 60);
+
+            SelectProfile(_selectedProfile);
+            _gammaEngine.ApplyProfile(_selectedProfile);
+        }
+
+        private void BtnPresetRedEnemy_Click(object sender, RoutedEventArgs e) {
+            if (_selectedProfile == null) return;
+            // 红衣/热成像目标突出：提亮红通道 Gamma 25%，微降绿蓝通道
+            _selectedProfile.Red.Gamma = Math.Min(320, _selectedProfile.Red.Gamma + 30);
+            _selectedProfile.Red.Contrast = Math.Min(180, _selectedProfile.Red.Contrast + 15);
+
+            SelectProfile(_selectedProfile);
+            _gammaEngine.ApplyProfile(_selectedProfile);
+        }
+
+        private void ProfileItem_MouseDown(object sender, MouseButtonEventArgs e) {
+            if (sender is Border b && b.DataContext is GammaProfile p) {
                 SelectProfile(p);
                 ActivateProfile(p);
             }
         }
 
-        private void BtnAddProfile_Click(object sender, RoutedEventArgs e) {
-            var np = new GammaProfile {
-                Name = $"自定义方案 {_config.Profiles.Count + 1}",
-                KeyName = "无",
-                VirtualKey = 0,
-                IsReadOnly = false,
-                Red = new ColorChannel { Gamma = 200, Contrast = 120, Brightness = 0 },
-                Green = new ColorChannel { Gamma = 200, Contrast = 120, Brightness = 0 },
-                Blue = new ColorChannel { Gamma = 200, Contrast = 120, Brightness = 0 }
-            };
-            _config.Profiles.Add(np);
-            ConfigManager.Save(_config);
-            RefreshProfileList();
-            SelectProfile(np);
-            ActivateProfile(np);
+        private void ActivateProfile(GammaProfile profile) {
+            foreach (var p in _config.Profiles) {
+                p.IsActive = (p.Id == profile.Id);
+            }
+
+            if (profile.VirtualKey == 0x76 && profile.Name.Contains("恢复")) {
+                _gammaEngine.ResetToDefault(!_config.EnableTransition);
+            } else {
+                _gammaEngine.ApplyProfile(profile, !_config.EnableTransition);
+            }
+
+            if (_config.EnableOsd) {
+                ShowOsd(profile);
+            }
+
+            UpdateTrayMenu();
         }
 
-        private void BtnDeleteProfile_Click(object sender, RoutedEventArgs e) {
-            if ((sender as FrameworkElement)?.Tag is GammaProfile p) {
-                if (p.IsReadOnly) {
-                    MessageBox.Show("此为内置预设方案，无法删除！", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
-                    return;
-                }
-                if (MessageBox.Show($"确定删除滤镜方案「{p.Name}」？", "删除确认", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes) {
-                    _config.Profiles.Remove(p);
-                    ConfigManager.Save(_config);
-                    ReRegisterHotKeys();
-                    RefreshProfileList();
-                    SelectProfile(_config.Profiles.FirstOrDefault());
-                }
+        private void ShowOsd(GammaProfile profile) {
+            if (_osdWindow == null) {
+                _osdWindow = new OsdWindow();
             }
-        }
-
-        private void TxtProfileName_TextChanged(object sender, TextChangedEventArgs e) {
-            if (!_isUpdatingUi && _selectedProfile != null) {
-                _selectedProfile.Name = TxtProfileName.Text.Trim();
-                UpdateTrayMenu();
-            }
-        }
-
-        private void CmbHotKey_SelectionChanged(object sender, SelectionChangedEventArgs e) {
-            if (!_isUpdatingUi && _selectedProfile != null && CmbHotKey.SelectedItem is string k) {
-                _selectedProfile.KeyName = k;
-                _selectedProfile.VirtualKey = HotKeyManager.KeyMap.TryGetValue(k, out uint vk) ? vk : 0;
-                ReRegisterHotKeys();
-                UpdateTrayMenu();
-            }
+            string subtitle = $"暗部平衡:{profile.BlackEqualizer}% | Gamma:{(profile.Red.Gamma / 100.0):F2} | 对比:{profile.Red.Contrast}%";
+            _osdWindow.ShowMessage(profile.Name, profile.KeyName, subtitle);
         }
 
         private void Slider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e) {
             if (_isUpdatingUi || _selectedProfile == null) return;
 
-            int g = (int)SliderGamma.Value;
-            int c = (int)SliderContrast.Value;
-            int b = (int)SliderBrightness.Value;
+            if (sender == SliderBlackEq) {
+                _selectedProfile.BlackEqualizer = (int)SliderBlackEq.Value;
+                TxtBlackEqVal.Text = _selectedProfile.BlackEqualizer.ToString();
+            } else if (sender == SliderHighlight) {
+                _selectedProfile.HighlightRolloff = (int)SliderHighlight.Value;
+                TxtHighlightVal.Text = _selectedProfile.HighlightRolloff.ToString();
+            } else if (sender == SliderGamma) {
+                int val = (int)SliderGamma.Value;
+                TxtGammaVal.Text = (val / 100.0).ToString("F2");
+                ApplyChannelValue(c => c.Gamma = val);
+            } else if (sender == SliderContrast) {
+                int val = (int)SliderContrast.Value;
+                TxtContrastVal.Text = val.ToString();
+                ApplyChannelValue(c => c.Contrast = val);
+            } else if (sender == SliderBrightness) {
+                int val = (int)SliderBrightness.Value;
+                TxtBrightnessVal.Text = val.ToString();
+                ApplyChannelValue(c => c.Brightness = val);
+            }
 
-            _selectedProfile.Red.Gamma = g; _selectedProfile.Green.Gamma = g; _selectedProfile.Blue.Gamma = g;
-            _selectedProfile.Red.Contrast = c; _selectedProfile.Green.Contrast = c; _selectedProfile.Blue.Contrast = c;
-            _selectedProfile.Red.Brightness = b; _selectedProfile.Green.Brightness = b; _selectedProfile.Blue.Brightness = b;
+            _gammaEngine.ApplyProfile(_selectedProfile, true);
+        }
 
-            _isUpdatingUi = true;
-            TxtGammaVal.Text = (g / 100.0).ToString("0.00", CultureInfo.InvariantCulture);
-            TxtContrastVal.Text = c.ToString();
-            TxtBrightnessVal.Text = b.ToString();
-            _isUpdatingUi = false;
+        private void ApplyChannelValue(Action<ColorChannel> updateAction) {
+            if (_selectedProfile == null) return;
+            if (_channelMode == 0) {
+                updateAction(_selectedProfile.Red);
+                updateAction(_selectedProfile.Green);
+                updateAction(_selectedProfile.Blue);
+            } else if (_channelMode == 1) {
+                updateAction(_selectedProfile.Red);
+            } else if (_channelMode == 2) {
+                updateAction(_selectedProfile.Green);
+            } else if (_channelMode == 3) {
+                updateAction(_selectedProfile.Blue);
+            }
+        }
 
-            _gammaEngine.ApplyProfile(_selectedProfile, immediate: true);
+        private void TxtBlackEqVal_TextChanged(object sender, TextChangedEventArgs e) {
+            if (_isUpdatingUi || _selectedProfile == null) return;
+            if (int.TryParse(TxtBlackEqVal.Text.Trim(), out int val)) {
+                val = Math.Clamp(val, 0, 100);
+                _selectedProfile.BlackEqualizer = val;
+                _isUpdatingUi = true;
+                SliderBlackEq.Value = val;
+                _isUpdatingUi = false;
+                _gammaEngine.ApplyProfile(_selectedProfile, true);
+            }
+        }
+
+        private void TxtBlackEqVal_LostFocus(object sender, RoutedEventArgs e) {
+            if (_selectedProfile != null) TxtBlackEqVal.Text = _selectedProfile.BlackEqualizer.ToString();
+        }
+
+        private void TxtHighlightVal_TextChanged(object sender, TextChangedEventArgs e) {
+            if (_isUpdatingUi || _selectedProfile == null) return;
+            if (int.TryParse(TxtHighlightVal.Text.Trim(), out int val)) {
+                val = Math.Clamp(val, 0, 100);
+                _selectedProfile.HighlightRolloff = val;
+                _isUpdatingUi = true;
+                SliderHighlight.Value = val;
+                _isUpdatingUi = false;
+                _gammaEngine.ApplyProfile(_selectedProfile, true);
+            }
+        }
+
+        private void TxtHighlightVal_LostFocus(object sender, RoutedEventArgs e) {
+            if (_selectedProfile != null) TxtHighlightVal.Text = _selectedProfile.HighlightRolloff.ToString();
         }
 
         private void TxtGammaVal_TextChanged(object sender, TextChangedEventArgs e) {
             if (_isUpdatingUi || _selectedProfile == null) return;
-            string raw = TxtGammaVal.Text.Trim().Replace(",", ".");
-            if (double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out double g)) {
-                int gi = (int)Math.Round(g * 100.0);
-                if (gi >= 10 && gi <= 400) {
-                    _selectedProfile.Red.Gamma = gi;
-                    _selectedProfile.Green.Gamma = gi;
-                    _selectedProfile.Blue.Gamma = gi;
-
-                    _isUpdatingUi = true;
-                    SliderGamma.Value = Math.Clamp(gi, SliderGamma.Minimum, SliderGamma.Maximum);
-                    _isUpdatingUi = false;
-
-                    _gammaEngine.ApplyProfile(_selectedProfile, immediate: true);
-                }
+            if (double.TryParse(TxtGammaVal.Text.Trim().Replace(',', '.'), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double val)) {
+                int g = (int)Math.Clamp(Math.Round(val * 100.0), 100, 320);
+                ApplyChannelValue(c => c.Gamma = g);
+                _isUpdatingUi = true;
+                SliderGamma.Value = g;
+                _isUpdatingUi = false;
+                _gammaEngine.ApplyProfile(_selectedProfile, true);
             }
         }
 
         private void TxtGammaVal_LostFocus(object sender, RoutedEventArgs e) {
-            if (_selectedProfile != null) {
-                _isUpdatingUi = true;
-                TxtGammaVal.Text = (_selectedProfile.Red.Gamma / 100.0).ToString("0.00", CultureInfo.InvariantCulture);
-                _isUpdatingUi = false;
-            }
+            if (_selectedProfile != null) TxtGammaVal.Text = (_selectedProfile.Red.Gamma / 100.0).ToString("F2");
         }
 
         private void TxtContrastVal_TextChanged(object sender, TextChangedEventArgs e) {
             if (_isUpdatingUi || _selectedProfile == null) return;
-            string raw = TxtContrastVal.Text.Trim().Replace("%", "");
-            if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int v)) {
-                if (v >= 20 && v <= 300) {
-                    _selectedProfile.Red.Contrast = v;
-                    _selectedProfile.Green.Contrast = v;
-                    _selectedProfile.Blue.Contrast = v;
-
-                    _isUpdatingUi = true;
-                    SliderContrast.Value = Math.Clamp(v, SliderContrast.Minimum, SliderContrast.Maximum);
-                    _isUpdatingUi = false;
-
-                    _gammaEngine.ApplyProfile(_selectedProfile, immediate: true);
-                }
+            if (int.TryParse(TxtContrastVal.Text.Trim(), out int val)) {
+                val = Math.Clamp(val, 80, 180);
+                ApplyChannelValue(c => c.Contrast = val);
+                _isUpdatingUi = true;
+                SliderContrast.Value = val;
+                _isUpdatingUi = false;
+                _gammaEngine.ApplyProfile(_selectedProfile, true);
             }
         }
 
         private void TxtContrastVal_LostFocus(object sender, RoutedEventArgs e) {
-            if (_selectedProfile != null) {
-                _isUpdatingUi = true;
-                TxtContrastVal.Text = _selectedProfile.Red.Contrast.ToString();
-                _isUpdatingUi = false;
-            }
+            if (_selectedProfile != null) TxtContrastVal.Text = _selectedProfile.Red.Contrast.ToString();
         }
 
         private void TxtBrightnessVal_TextChanged(object sender, TextChangedEventArgs e) {
             if (_isUpdatingUi || _selectedProfile == null) return;
-            string raw = TxtBrightnessVal.Text.Trim().Replace("%", "");
-            if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int v)) {
-                if (v >= -80 && v <= 80) {
-                    _selectedProfile.Red.Brightness = v;
-                    _selectedProfile.Green.Brightness = v;
-                    _selectedProfile.Blue.Brightness = v;
-
-                    _isUpdatingUi = true;
-                    SliderBrightness.Value = Math.Clamp(v, SliderBrightness.Minimum, SliderBrightness.Maximum);
-                    _isUpdatingUi = false;
-
-                    _gammaEngine.ApplyProfile(_selectedProfile, immediate: true);
-                }
+            if (int.TryParse(TxtBrightnessVal.Text.Trim(), out int val)) {
+                val = Math.Clamp(val, -30, 30);
+                ApplyChannelValue(c => c.Brightness = val);
+                _isUpdatingUi = true;
+                SliderBrightness.Value = val;
+                _isUpdatingUi = false;
+                _gammaEngine.ApplyProfile(_selectedProfile, true);
             }
         }
 
         private void TxtBrightnessVal_LostFocus(object sender, RoutedEventArgs e) {
-            if (_selectedProfile != null) {
-                _isUpdatingUi = true;
-                TxtBrightnessVal.Text = _selectedProfile.Red.Brightness.ToString();
-                _isUpdatingUi = false;
+            if (_selectedProfile != null) TxtBrightnessVal.Text = _selectedProfile.Red.Brightness.ToString();
+        }
+
+        private void TxtProfileName_TextChanged(object sender, TextChangedEventArgs e) {
+            if (_isUpdatingUi || _selectedProfile == null) return;
+            _selectedProfile.Name = TxtProfileName.Text;
+        }
+
+        private void CmbHotKey_SelectionChanged(object sender, SelectionChangedEventArgs e) {
+            if (_isUpdatingUi || _selectedProfile == null) return;
+            string sel = CmbHotKey.SelectedItem as string ?? "无";
+            _selectedProfile.KeyName = sel;
+
+            if (sel == "无") {
+                _selectedProfile.VirtualKey = 0;
+            } else if (sel.Contains("Mouse 4")) {
+                _selectedProfile.VirtualKey = HotKeyManager.VK_XBUTTON1;
+            } else if (sel.Contains("Mouse 5")) {
+                _selectedProfile.VirtualKey = HotKeyManager.VK_XBUTTON2;
+            } else if (sel.StartsWith("F") && int.TryParse(sel.Substring(1), out int fNum)) {
+                _selectedProfile.VirtualKey = (uint)(0x6F + fNum);
+            } else if (sel.StartsWith("数字 ") && int.TryParse(sel.Substring(3), out int dNum)) {
+                _selectedProfile.VirtualKey = (uint)(0x30 + dNum);
+            }
+
+            ReRegisterHotKeys();
+        }
+
+        private void BtnAddProfile_Click(object sender, RoutedEventArgs e) {
+            var newProf = new GammaProfile {
+                Name = $"自定义滤镜 {_config.Profiles.Count + 1}",
+                KeyName = "无",
+                VirtualKey = 0,
+                BlackEqualizer = 20,
+                HighlightRolloff = 30
+            };
+            newProf.Red.Gamma = 220; newProf.Red.Contrast = 135; newProf.Red.Brightness = -5;
+            newProf.Green.Gamma = 220; newProf.Green.Contrast = 135; newProf.Green.Brightness = -5;
+            newProf.Blue.Gamma = 220; newProf.Blue.Contrast = 135; newProf.Blue.Brightness = -5;
+
+            _config.Profiles.Add(newProf);
+            RefreshProfileList();
+            SelectProfile(newProf);
+            ConfigManager.Save(_config);
+            UpdateTrayMenu();
+        }
+
+        private void BtnDeleteProfile_Click(object sender, RoutedEventArgs e) {
+            if (sender is Button b && b.Tag is GammaProfile p) {
+                if (p.IsReadOnly) {
+                    MessageBox.Show("系统默认预设不能删除。", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                _config.Profiles.Remove(p);
+                RefreshProfileList();
+                SelectProfile(_config.Profiles.FirstOrDefault());
+                ConfigManager.Save(_config);
+                ReRegisterHotKeys();
+                UpdateTrayMenu();
             }
         }
 
@@ -370,37 +584,40 @@ namespace ButterflyGammaPro {
         }
 
         private void BtnResetDefault_Click(object sender, RoutedEventArgs e) {
-            var def = _config.Profiles.FirstOrDefault(p => p.VirtualKey == 0x76);
-            if (def != null) {
-                ActivateProfile(def);
-            } else {
-                _gammaEngine.ResetToDefault();
+            foreach (var p in _config.Profiles) p.IsActive = false;
+            _gammaEngine.ResetToDefault(!_config.EnableTransition);
+            if (_config.EnableOsd) {
+                _osdWindow ??= new OsdWindow();
+                _osdWindow.ShowMessage("屏幕色彩已复原", "默认", "恢复标准显示器硬件设定");
             }
+            UpdateTrayMenu();
         }
 
         private void BtnSaveConfig_Click(object sender, RoutedEventArgs e) {
-            _config.EnableOsd = ChkOsd.IsChecked == true;
-            _config.EnableTransition = ChkTransition.IsChecked == true;
-            _config.AntiResetLock = ChkAntiReset.IsChecked == true;
+            _config.EnableOsd = ChkOsd.IsChecked ?? true;
+            _config.EnableTransition = ChkTransition.IsChecked ?? true;
+            _config.AntiResetLock = ChkAntiReset.IsChecked ?? true;
+            _gammaEngine.AntiResetEnabled = _config.AntiResetLock;
+
             ConfigManager.Save(_config);
-            MessageBox.Show("配置已成功保存！", "Butterfly Gamma Pro", MessageBoxButton.OK, MessageBoxImage.Information);
+            TxtStatus.Text = "配置已保存至本地 config.json";
         }
 
-        public void ShowWindow() {
+        private void BtnMinimize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
+        private void BtnClose_Click(object sender, RoutedEventArgs e) => Close();
+
+        private void ShowWindow() {
             this.Show();
-            this.WindowState = WindowState.Normal;
+            if (this.WindowState == WindowState.Minimized) {
+                this.WindowState = WindowState.Normal;
+            }
             this.Activate();
+            this.Topmost = true;
+            this.Topmost = false;
+            this.Focus();
         }
 
-        private void BtnMinimize_Click(object sender, RoutedEventArgs e) {
-            this.WindowState = WindowState.Minimized;
-        }
-
-        private void BtnClose_Click(object sender, RoutedEventArgs e) {
-            this.Close();
-        }
-
-        private void MainWindow_Closing(object? sender, CancelEventArgs e) {
+        private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e) {
             if (!_isExplicitExit) {
                 if (_config.RememberCloseChoice && _config.CloseBehavior == 1) {
                     e.Cancel = true;
@@ -454,6 +671,7 @@ namespace ButterflyGammaPro {
         private void TitleBar_MouseDown(object sender, MouseButtonEventArgs e) {
             if (e.LeftButton == MouseButtonState.Pressed) this.DragMove();
         }
+
         private async void BtnCheckUpdate_Click(object sender, RoutedEventArgs e) {
             await CheckForUpdatesManually();
         }
@@ -462,16 +680,16 @@ namespace ButterflyGammaPro {
             BtnCheckUpdate.IsEnabled = false;
             BtnCheckUpdate.Content = "⏳ 检查中...";
             try {
-                var updateInfo = await ButterflyGammaPro.Services.UpdateService.CheckForUpdatesAsync();
+                var updateInfo = await UpdateService.CheckForUpdatesAsync();
                 if (updateInfo == null) {
-                    MessageBox.Show("未能连接到 GitHub 更新服务器，请稍后重试或检查网络设置。", "检查更新", MessageBoxButton.OK, MessageBoxImage.Information);
+                    MessageBox.Show("未能连接到更新服务器，请检查网络或稍后重试。", "检查更新", MessageBoxButton.OK, MessageBoxImage.Information);
                     return;
                 }
 
                 if (updateInfo.HasUpdate) {
                     ShowUpdateDialog(updateInfo);
                 } else {
-                    MessageBox.Show($"当前已是最新版本 (v{ButterflyGammaPro.Services.UpdateService.CurrentVersion})，无需更新！", "检查更新", MessageBoxButton.OK, MessageBoxImage.Information);
+                    MessageBox.Show($"当前已是最新版本 (v{UpdateService.CurrentVersion})，无需更新！", "检查更新", MessageBoxButton.OK, MessageBoxImage.Information);
                 }
             } catch (Exception ex) {
                 MessageBox.Show($"检查更新发生异常: {ex.Message}", "检查更新", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -481,58 +699,11 @@ namespace ButterflyGammaPro {
             }
         }
 
-        private void ShowUpdateDialog(ButterflyGammaPro.Services.UpdateInfo updateInfo) {
-            var updateWnd = new ButterflyGammaPro.Views.UpdateWindow(updateInfo) {
+        private void ShowUpdateDialog(UpdateInfo updateInfo) {
+            var updateWnd = new Views.UpdateWindow(updateInfo) {
                 Owner = this
             };
             updateWnd.ShowDialog();
-        }
-        private void InitMonitorsList() {
-            var monitors = DisplayManager.GetActiveMonitors();
-            var items = new List<DisplayMonitorInfo> {
-                new DisplayMonitorInfo { DisplayId = "ALL", Title = "🌐 全部显示器 (所有屏幕同步)" },
-                new DisplayMonitorInfo { DisplayId = "PRIMARY", Title = "🖥️ 仅主显示器 (竞技游戏主屏专用)" }
-            };
-            items.AddRange(monitors);
-
-            _isUpdatingUi = true;
-            CmbMonitors.ItemsSource = items;
-
-            var match = items.FirstOrDefault(i => string.Equals(i.DisplayId, _config.TargetMonitor, StringComparison.OrdinalIgnoreCase));
-            if (match != null) {
-                CmbMonitors.SelectedValue = match.DisplayId;
-            } else {
-                CmbMonitors.SelectedValue = "ALL";
-            }
-            _isUpdatingUi = false;
-        }
-
-        private void CmbMonitors_SelectionChanged(object sender, SelectionChangedEventArgs e) {
-            if (_isUpdatingUi) return;
-            string? targetId = CmbMonitors.SelectedValue as string;
-            if (!string.IsNullOrEmpty(targetId)) {
-                SelectTargetMonitor(targetId);
-            }
-        }
-
-        private void BtnRefreshMonitors_Click(object sender, RoutedEventArgs e) {
-            _gammaEngine.BackupInitialRamps();
-            InitMonitorsList();
-            var list = DisplayManager.GetActiveMonitors();
-            TxtStatus.Text = $"已刷新显示器：检测到 {list.Count} 台物理屏幕";
-            UpdateTrayMenu();
-        }
-
-        private void SelectTargetMonitor(string id) {
-            _config.TargetMonitor = id;
-            _gammaEngine.SetTargetMonitor(id);
-            ConfigManager.Save(_config);
-
-            _isUpdatingUi = true;
-            CmbMonitors.SelectedValue = id;
-            _isUpdatingUi = false;
-
-            UpdateTrayMenu();
         }
     }
 }

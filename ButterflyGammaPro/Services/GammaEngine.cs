@@ -58,44 +58,52 @@ namespace ButterflyGammaPro.Services {
         public bool AntiResetEnabled { get; set; } = true;
         public int TransitionDurationMs { get; set; } = 120;
         public GammaProfile? ActiveProfile { get; private set; }
-
-        /// <summary>
-        /// 目标屏幕：
-        /// "ALL" = 全部显示器
-        /// "PRIMARY" = 仅主显示器
-        /// @"\\.\DISPLAY1" 等 = 指定具体显示器
-        /// </summary>
         public string TargetMonitorId { get; set; } = "ALL";
 
         public GammaEngine() {
             BackupInitialRamps();
 
-            // 进程退出或异常崩溃时，安全还原所有显示器的硬件色彩
             AppDomain.CurrentDomain.ProcessExit += (s, e) => RestoreHardwareSafely();
             AppDomain.CurrentDomain.UnhandledException += (s, e) => RestoreHardwareSafely();
 
-            // 防掉滤镜守护心跳：定期轮询目标屏幕的色彩状态，若被全屏独占游戏或切屏重置，则秒级自动回正
+            // 多点多通道防掉滤镜守护：以 3 秒低开销轮询作为后备巡检
             _antiResetTimer = new System.Threading.Timer(_ => {
                 if (!AntiResetEnabled || ActiveProfile == null) return;
-                var targets = ResolveTargetDevices();
-                foreach (var dev in targets) {
-                    IntPtr hdc = DisplayManager.GetMonitorDC(dev, out bool needsDelete);
-                    if (hdc == IntPtr.Zero) continue;
-                    try {
-                        RAMP cur = RAMP.CreateEmpty();
-                        if (GetDeviceGammaRamp(hdc, ref cur)) {
-                            int diff = Math.Abs(cur.Red[128] - _targetRamp.Red[128]);
-                            if (diff > 1500) {
-                                lock (_rampLock) {
-                                    SetDeviceGammaRamp(hdc, ref _targetRamp);
-                                }
+                CheckAndRestoreTargetRamps();
+            }, null, 3000, 3000);
+        }
+
+        public void CheckAndRestoreTargetRamps() {
+            var targets = ResolveTargetDevices();
+            foreach (var dev in targets) {
+                IntPtr hdc = DisplayManager.GetMonitorDC(dev, out bool needsDelete);
+                if (hdc == IntPtr.Zero) continue;
+                try {
+                    RAMP cur = RAMP.CreateEmpty();
+                    if (GetDeviceGammaRamp(hdc, ref cur)) {
+                        // 多点多通道检测：暗部 (32)、中位 (128)、高光 (224) 跨 RGB 综合判断
+                        bool drifted = Math.Abs(cur.Red[32] - _targetRamp.Red[32]) > 1500
+                                    || Math.Abs(cur.Red[128] - _targetRamp.Red[128]) > 1500
+                                    || Math.Abs(cur.Green[128] - _targetRamp.Green[128]) > 1500
+                                    || Math.Abs(cur.Blue[128] - _targetRamp.Blue[128]) > 1500;
+                        if (drifted) {
+                            lock (_rampLock) {
+                                SetDeviceGammaRamp(hdc, ref _targetRamp);
                             }
                         }
-                    } finally {
-                        DisplayManager.ReleaseMonitorDC(hdc, needsDelete);
                     }
+                } finally {
+                    DisplayManager.ReleaseMonitorDC(hdc, needsDelete);
                 }
-            }, null, 1500, 1200);
+            }
+        }
+
+        public void ReapplyActiveProfileImmediately() {
+            if (ActiveProfile == null) return;
+            lock (_rampLock) {
+                var targets = ResolveTargetDevices();
+                ApplyRampToDevices(targets, _targetRamp);
+            }
         }
 
         public void BackupInitialRamps() {
@@ -121,7 +129,6 @@ namespace ButterflyGammaPro.Services {
                 var currentTargets = new HashSet<string>(ResolveTargetDevices(), StringComparer.OrdinalIgnoreCase);
                 var allMonitors = DisplayManager.GetActiveMonitors();
 
-                // 将非目标屏幕恢复原厂初始色彩
                 foreach (var mon in allMonitors) {
                     if (!currentTargets.Contains(mon.DeviceName)) {
                         if (_initialRamps.TryGetValue(mon.DeviceName, out var orig)) {
@@ -132,7 +139,6 @@ namespace ButterflyGammaPro.Services {
                     }
                 }
 
-                // 如果当前处于滤镜激活状态，将滤镜应用到新目标屏幕
                 if (ActiveProfile != null) {
                     foreach (var dev in currentTargets) {
                         ApplyRampToDevice(dev, _targetRamp);
@@ -159,7 +165,6 @@ namespace ButterflyGammaPro.Services {
                 return new List<string> { match.DeviceName };
             }
 
-            // 找不到匹配时兜底全部
             return active.Select(m => m.DeviceName).ToList();
         }
 
@@ -177,7 +182,7 @@ namespace ButterflyGammaPro.Services {
         }
 
         public void ApplyProfile(GammaProfile profile, bool immediate = false) {
-            RAMP target = CalculateRamp(profile.Red, profile.Green, profile.Blue);
+            RAMP target = CalculateRamp(profile.Red, profile.Green, profile.Blue, profile.BlackEqualizer, profile.HighlightRolloff);
             ActiveProfile = profile;
             TransitionToRamp(target, immediate ? 0 : TransitionDurationMs);
         }
@@ -187,23 +192,49 @@ namespace ButterflyGammaPro.Services {
             TransitionToRamp(_fallbackLinearRamp, immediate ? 0 : TransitionDurationMs);
         }
 
-        public static RAMP CalculateRamp(ColorChannel red, ColorChannel green, ColorChannel blue) {
+        /// <summary>
+        /// 专业 FPS 竞技调色数学模型：融合 暗部平衡 (Black Equalizer) 与 高光防刺眼滚降 (Highlight Rolloff)
+        /// </summary>
+        public static RAMP CalculateRamp(ColorChannel red, ColorChannel green, ColorChannel blue, int blackEqualizer = 0, int highlightRolloff = 0) {
             var ramp = RAMP.CreateEmpty();
-            ramp.Red = BuildChannelRamp(red);
-            ramp.Green = BuildChannelRamp(green);
-            ramp.Blue = BuildChannelRamp(blue);
+            ramp.Red = BuildChannelRamp(red, blackEqualizer, highlightRolloff);
+            ramp.Green = BuildChannelRamp(green, blackEqualizer, highlightRolloff);
+            ramp.Blue = BuildChannelRamp(blue, blackEqualizer, highlightRolloff);
             return ramp;
         }
 
-        private static ushort[] BuildChannelRamp(ColorChannel ch) {
+        public static ushort[] BuildChannelRamp(ColorChannel ch, int blackEqualizer = 0, int highlightRolloff = 0) {
             ushort[] channel = new ushort[256];
             double gammaExp = 100.0 / Math.Max(10, ch.Gamma);
             double contrastFactor = ch.Contrast / 100.0;
             double brightnessOffset = ch.Brightness / 100.0;
 
+            double beWeight = (blackEqualizer / 100.0) * 0.38;
+            double hlWeight = (highlightRolloff / 100.0) * 0.22;
+
             for (int i = 0; i < 256; i++) {
-                double val = Math.Pow(i / 255.0, gammaExp);
+                double x = i / 255.0;
+
+                // 1. 暗部平衡 (Black Equalizer / Shadow Lift):
+                // 采用 (1-x)^2 * x 钟形增益曲线，在 15%~25% 暗部区间达到峰值提升，0% 与 100% 保持 0 偏移，不发灰、不过曝
+                if (beWeight > 0.001) {
+                    double lift = (1.0 - x) * (1.0 - x) * x * 4.0 * beWeight;
+                    x = Math.Clamp(x + lift, 0.0, 1.0);
+                }
+
+                // 2. 灰度 Gamma 变换
+                double val = Math.Pow(x, gammaExp);
+
+                // 3. 对比度与亮度偏移
                 val = (val - 0.5) * contrastFactor + 0.5 + brightnessOffset;
+
+                // 4. 高光防刺眼抑制 (Highlight Rolloff):
+                // 当高光值超过 0.65 时，施加平滑二次回退，压制室外雪盲和枪口焰火闪烁
+                if (hlWeight > 0.001 && val > 0.65) {
+                    double t = (val - 0.65) / 0.35;
+                    val -= t * t * hlWeight;
+                }
+
                 channel[i] = (ushort)Math.Round(Math.Clamp(val, 0.0, 1.0) * 65535.0);
             }
             return channel;

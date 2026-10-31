@@ -3,6 +3,7 @@
   "EnableTransition": true,
   "AntiResetLock": true,
   "ActiveProfileId": "default_outdoor",
+  "TargetMonitor": "ALL",
   "CloseBehavior": 2,
   "RememberCloseChoice": true,
   "Profiles": [
@@ -13,21 +14,11 @@
       "VirtualKey": 118,
       "Modifiers": 0,
       "IsReadOnly": true,
-      "Red": {
-        "Gamma": 100,
-        "Brightness": 0,
-        "Contrast": 100
-      },
-      "Green": {
-        "Gamma": 100,
-        "Brightness": 0,
-        "Contrast": 100
-      },
-      "Blue": {
-        "Gamma": 100,
-        "Brightness": 0,
-        "Contrast": 100
-      }
+      "BlackEqualizer": 0,
+      "HighlightRolloff": 0,
+      "Red": { "Gamma": 100, "Brightness": 0, "Contrast": 100 },
+      "Green": { "Gamma": 100, "Brightness": 0, "Contrast": 100 },
+      "Blue": { "Gamma": 100, "Brightness": 0, "Contrast": 100 }
     },
     {
       "Id": "default_indoor",
@@ -36,44 +27,24 @@
       "VirtualKey": 119,
       "Modifiers": 0,
       "IsReadOnly": false,
-      "Red": {
-        "Gamma": 220,
-        "Brightness": -5,
-        "Contrast": 135
-      },
-      "Green": {
-        "Gamma": 220,
-        "Brightness": -5,
-        "Contrast": 135
-      },
-      "Blue": {
-        "Gamma": 220,
-        "Brightness": -5,
-        "Contrast": 135
-      }
+      "BlackEqualizer": 30,
+      "HighlightRolloff": 40,
+      "Red": { "Gamma": 220, "Brightness": -5, "Contrast": 135 },
+      "Green": { "Gamma": 220, "Brightness": -5, "Contrast": 135 },
+      "Blue": { "Gamma": 220, "Brightness": -5, "Contrast": 135 }
     },
     {
-      "Id": "default_bunker",
+      "Id": "default_extreme",
       "Name": "【游戏内】极夜/地道 极限透光",
       "KeyName": "F9",
       "VirtualKey": 120,
       "Modifiers": 0,
       "IsReadOnly": false,
-      "Red": {
-        "Gamma": 250,
-        "Brightness": -8,
-        "Contrast": 145
-      },
-      "Green": {
-        "Gamma": 250,
-        "Brightness": -8,
-        "Contrast": 145
-      },
-      "Blue": {
-        "Gamma": 250,
-        "Brightness": -8,
-        "Contrast": 145
-      }
+      "BlackEqualizer": 50,
+      "HighlightRolloff": 55,
+      "Red": { "Gamma": 250, "Brightness": -8, "Contrast": 145 },
+      "Green": { "Gamma": 250, "Brightness": -8, "Contrast": 145 },
+      "Blue": { "Gamma": 250, "Brightness": -8, "Contrast": 145 }
     }
   ]
 }
