@@ -344,28 +344,6 @@ namespace ButterflyGammaPro {
             _isUpdatingUi = false;
         }
 
-        private void BtnPresetNvg_Click(object sender, RoutedEventArgs e) {
-            if (_selectedProfile == null) return;
-            // 压制夜视仪绿光：适度降低绿光 Gamma，拉升暗部平衡与防刺眼
-            _selectedProfile.Green.Gamma = Math.Max(50, _selectedProfile.Red.Gamma - 35);
-            _selectedProfile.Green.Contrast = Math.Max(80, _selectedProfile.Red.Contrast - 10);
-            _selectedProfile.BlackEqualizer = Math.Max(_selectedProfile.BlackEqualizer, 40);
-            _selectedProfile.HighlightRolloff = Math.Max(_selectedProfile.HighlightRolloff, 60);
-
-            SelectProfile(_selectedProfile);
-            _gammaEngine.ApplyProfile(_selectedProfile);
-        }
-
-        private void BtnPresetRedEnemy_Click(object sender, RoutedEventArgs e) {
-            if (_selectedProfile == null) return;
-            // 红衣/热成像目标突出：提亮红通道 Gamma 25%，微降绿蓝通道
-            _selectedProfile.Red.Gamma = Math.Min(320, _selectedProfile.Red.Gamma + 30);
-            _selectedProfile.Red.Contrast = Math.Min(180, _selectedProfile.Red.Contrast + 15);
-
-            SelectProfile(_selectedProfile);
-            _gammaEngine.ApplyProfile(_selectedProfile);
-        }
-
         private void ProfileItem_MouseDown(object sender, MouseButtonEventArgs e) {
             if (sender is Border b && b.DataContext is GammaProfile p) {
                 SelectProfile(p);

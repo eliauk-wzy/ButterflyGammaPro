@@ -200,19 +200,13 @@
 
                         <!-- 2. 滑块调色区 (通道切换 + 暗部平衡 + 高光滚降 + RGB微调) -->
                         <StackPanel Grid.Row="2" VerticalAlignment="Center">
-                            <!-- RGB 通道切换与电竞快速预设 -->
-                            <Grid Margin="0,0,0,6">
-                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                    <RadioButton x:Name="RdoChanAll" Content="⚪ 全RGB" IsChecked="True" Foreground="#38BDF8" FontSize="11" Margin="0,0,8,0" Cursor="Hand" Checked="RdoChan_Checked"/>
-                                    <RadioButton x:Name="RdoChanRed" Content="🔴 红" Foreground="#EF4444" FontSize="11" Margin="0,0,8,0" Cursor="Hand" Checked="RdoChan_Checked"/>
-                                    <RadioButton x:Name="RdoChanGreen" Content="🟢 绿" Foreground="#10B981" FontSize="11" Margin="0,0,8,0" Cursor="Hand" Checked="RdoChan_Checked"/>
-                                    <RadioButton x:Name="RdoChanBlue" Content="🔵 蓝" Foreground="#60A5FA" FontSize="11" Margin="0,0,8,0" Cursor="Hand" Checked="RdoChan_Checked"/>
-                                </StackPanel>
-                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-                                    <Button Content="🌿 压制夜视仪绿光" Height="20" Padding="5,0" Background="#0F172A" Foreground="#10B981" BorderBrush="#065F46" BorderThickness="1" FontSize="10" Cursor="Hand" Margin="0,0,4,0" Click="BtnPresetNvg_Click"/>
-                                    <Button Content="🔴 突出红衣敌人" Height="20" Padding="5,0" Background="#0F172A" Foreground="#EF4444" BorderBrush="#7F1D1D" BorderThickness="1" FontSize="10" Cursor="Hand" Click="BtnPresetRedEnemy_Click"/>
-                                </StackPanel>
-                            </Grid>
+                            <!-- RGB 通道切换 -->
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,0,6">
+                                <RadioButton x:Name="RdoChanAll" Content="⚪ 全RGB" IsChecked="True" Foreground="#38BDF8" FontSize="11" Margin="0,0,10,0" Cursor="Hand" Checked="RdoChan_Checked"/>
+                                <RadioButton x:Name="RdoChanRed" Content="🔴 红" Foreground="#EF4444" FontSize="11" Margin="0,0,10,0" Cursor="Hand" Checked="RdoChan_Checked"/>
+                                <RadioButton x:Name="RdoChanGreen" Content="🟢 绿" Foreground="#10B981" FontSize="11" Margin="0,0,10,0" Cursor="Hand" Checked="RdoChan_Checked"/>
+                                <RadioButton x:Name="RdoChanBlue" Content="🔵 蓝" Foreground="#60A5FA" FontSize="11" Margin="0,0,10,0" Cursor="Hand" Checked="RdoChan_Checked"/>
+                            </StackPanel>
 
                             <!-- A. 暗部平衡 (Black Equalizer / 仅提亮暗部细节) -->
                             <Grid Margin="0,1,0,1">
