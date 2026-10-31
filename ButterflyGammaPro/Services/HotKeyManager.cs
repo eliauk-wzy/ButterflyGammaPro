@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Windows.Interop;
 using ButterflyGammaPro.Models;
@@ -11,6 +12,27 @@ namespace ButterflyGammaPro.Services {
     }
 
     public class HotKeyManager : IDisposable {
+        // --- Win32 Low-Level Keyboard Hook API ---
+        private const int WH_KEYBOARD_LL = 13;
+        private const int WM_KEYDOWN = 0x0100;
+        private const int WM_SYSKEYDOWN = 0x0104;
+
+        private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool UnhookWindowsHookEx(IntPtr hhk);
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern IntPtr GetModuleHandle(string? lpModuleName);
+
+        // --- RegisterHotKey API (后备机制) ---
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
 
@@ -22,8 +44,16 @@ namespace ButterflyGammaPro.Services {
 
         private IntPtr _hWnd;
         private HwndSource? _source;
-        private readonly Dictionary<int, GammaProfile> _registered = new();
+        private IntPtr _hookId = IntPtr.Zero;
+        private LowLevelKeyboardProc? _hookProc;
+
+        private readonly Dictionary<uint, GammaProfile> _keyToProfile = new();
+        private readonly Dictionary<int, GammaProfile> _idToProfile = new();
         private int _idCounter = 1000;
+
+        // 防抖：防止由于 Hook 和 RegisterHotKey 双重触发或按键连发
+        private uint _lastTriggerKey = 0;
+        private long _lastTriggerTick = 0;
 
         public event Action<GammaProfile>? HotKeyPressed;
 
@@ -31,20 +61,55 @@ namespace ButterflyGammaPro.Services {
             _hWnd = hWnd;
             _source = source;
             _source.AddHook(HwndHook);
+
+            // 安装全局底层键盘钩子（直接拦截操作系统输入流，无视全屏游戏焦点与 UIPI 阻断）
+            InstallLowLevelHook();
+        }
+
+        private void InstallLowLevelHook() {
+            if (_hookId != IntPtr.Zero) return;
+            _hookProc = HookCallback;
+            using var curProcess = Process.GetCurrentProcess();
+            using var curModule = curProcess.MainModule;
+            IntPtr modHandle = curModule != null ? GetModuleHandle(curModule.ModuleName) : IntPtr.Zero;
+            _hookId = SetWindowsHookEx(WH_KEYBOARD_LL, _hookProc, modHandle, 0);
+        }
+
+        private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam) {
+            if (nCode >= 0 && (wParam == (IntPtr)WM_KEYDOWN || wParam == (IntPtr)WM_SYSKEYDOWN)) {
+                int vkCode = Marshal.ReadInt32(lParam);
+                uint vk = (uint)vkCode;
+
+                if (_keyToProfile.TryGetValue(vk, out var profile)) {
+                    TriggerProfile(profile, vk);
+                }
+            }
+            return CallNextHookEx(_hookId, nCode, wParam, lParam);
         }
 
         private IntPtr HwndHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled) {
-            if (msg == WM_HOTKEY && _registered.TryGetValue(wParam.ToInt32(), out var p)) {
-                HotKeyPressed?.Invoke(p);
+            if (msg == WM_HOTKEY && _idToProfile.TryGetValue(wParam.ToInt32(), out var profile)) {
+                TriggerProfile(profile, profile.VirtualKey);
                 handled = true;
             }
             return IntPtr.Zero;
         }
 
+        private void TriggerProfile(GammaProfile profile, uint vk) {
+            long now = Environment.TickCount64;
+            // 200ms 防抖，避免同时收到 Hook 和 RegisterHotKey 或长按重复触发
+            if (_lastTriggerKey == vk && (now - _lastTriggerTick) < 200) {
+                return;
+            }
+            _lastTriggerKey = vk;
+            _lastTriggerTick = now;
+
+            HotKeyPressed?.Invoke(profile);
+        }
+
         public HotKeyResult RegisterAll(IEnumerable<GammaProfile> profiles) {
             ClearAll();
             var result = new HotKeyResult();
-            if (_hWnd == IntPtr.Zero) return result;
 
             var registeredKeys = new HashSet<uint>();
 
@@ -56,19 +121,18 @@ namespace ButterflyGammaPro.Services {
                         continue;
                     }
 
-                    int id = ++_idCounter;
-                    bool ok = RegisterHotKey(_hWnd, id, MOD_NOREPEAT, p.VirtualKey);
-                    if (!ok) {
-                        // Fallback without MOD_NOREPEAT
-                        ok = RegisterHotKey(_hWnd, id, 0, p.VirtualKey);
-                    }
+                    _keyToProfile[p.VirtualKey] = p;
+                    registeredKeys.Add(p.VirtualKey);
 
-                    if (ok) {
-                        _registered[id] = p;
-                        registeredKeys.Add(p.VirtualKey);
-                    } else {
-                        result.AllSucceeded = false;
-                        result.Conflicts.Add($"{p.Name}({p.KeyName} 被占用)");
+                    // 同时注册 RegisterHotKey 作为系统级后备
+                    if (_hWnd != IntPtr.Zero) {
+                        int id = ++_idCounter;
+                        bool ok = RegisterHotKey(_hWnd, id, MOD_NOREPEAT, p.VirtualKey);
+                        if (!ok) ok = RegisterHotKey(_hWnd, id, 0, p.VirtualKey);
+
+                        if (ok) {
+                            _idToProfile[id] = p;
+                        }
                     }
                 }
             }
@@ -76,16 +140,23 @@ namespace ButterflyGammaPro.Services {
         }
 
         public void ClearAll() {
+            _keyToProfile.Clear();
             if (_hWnd != IntPtr.Zero) {
-                foreach (var id in _registered.Keys) {
+                foreach (var id in _idToProfile.Keys) {
                     UnregisterHotKey(_hWnd, id);
                 }
             }
-            _registered.Clear();
+            _idToProfile.Clear();
         }
 
         public void Dispose() {
             ClearAll();
+            if (_hookId != IntPtr.Zero) {
+                UnhookWindowsHookEx(_hookId);
+                _hookId = IntPtr.Zero;
+            }
+            _hookProc = null;
+
             if (_source != null) {
                 try { _source.RemoveHook(HwndHook); } catch {}
                 _source = null;
