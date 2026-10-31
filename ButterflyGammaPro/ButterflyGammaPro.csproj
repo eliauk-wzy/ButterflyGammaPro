@@ -9,12 +9,15 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <RootNamespace>ButterflyGammaPro</RootNamespace>
     <AssemblyName>ButterflyGammaPro</AssemblyName>
+    <Version>1.0.1</Version>
+    <AssemblyVersion>1.0.1.0</AssemblyVersion>
+    <FileVersion>1.0.1.0</FileVersion>
     
     <!-- 单文件自包含发布 -->
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    
   </PropertyGroup>
 
   <ItemGroup>

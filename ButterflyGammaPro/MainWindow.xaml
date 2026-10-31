@@ -72,6 +72,13 @@
                     </StackPanel>
 
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                        <Button x:Name="BtnCheckUpdate" Content="🔄 检查更新" Width="82" Height="26" Background="#0F172A" Foreground="#38BDF8" BorderBrush="#1E3A8A" BorderThickness="1" FontSize="11" FontWeight="SemiBold" Cursor="Hand" Margin="0,0,10,0" Click="BtnCheckUpdate_Click">
+                            <Button.Resources>
+                                <Style TargetType="Border">
+                                    <Setter Property="CornerRadius" Value="4"/>
+                                </Style>
+                            </Button.Resources>
+                        </Button>
                         <Button Content="一" Width="36" Height="28" Background="Transparent" Foreground="#94A3B8" BorderThickness="0" FontSize="13" Cursor="Hand" Click="BtnMinimize_Click"/>
                         <Button Content="✕" Width="36" Height="28" Background="Transparent" Foreground="#94A3B8" BorderThickness="0" FontSize="13" Cursor="Hand" Click="BtnClose_Click"/>
                     </StackPanel>
