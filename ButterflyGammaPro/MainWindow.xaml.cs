@@ -109,6 +109,24 @@ namespace ButterflyGammaPro {
 
             menu.Items.Add(new Separator { Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#334155")) });
 
+            var miTargetMon = new MenuItem { Header = "🖥️ 目标屏幕", Foreground = Brushes.White };
+            var miAll = new MenuItem { Header = "🌐 全部显示器 (所有屏幕同步)", IsChecked = string.Equals(_config.TargetMonitor, "ALL", StringComparison.OrdinalIgnoreCase) };
+            miAll.Click += (s, e) => SelectTargetMonitor("ALL");
+            miTargetMon.Items.Add(miAll);
+
+            var miPri = new MenuItem { Header = "🖥️ 仅主显示器 (竞技主屏专用)", IsChecked = string.Equals(_config.TargetMonitor, "PRIMARY", StringComparison.OrdinalIgnoreCase) };
+            miPri.Click += (s, e) => SelectTargetMonitor("PRIMARY");
+            miTargetMon.Items.Add(miPri);
+
+            var monitors = DisplayManager.GetActiveMonitors();
+            foreach (var m in monitors) {
+                var mon = m;
+                var miMon = new MenuItem { Header = mon.Title, IsChecked = string.Equals(_config.TargetMonitor, mon.DeviceName, StringComparison.OrdinalIgnoreCase) };
+                miMon.Click += (s, e) => SelectTargetMonitor(mon.DeviceName);
+                miTargetMon.Items.Add(miMon);
+            }
+            menu.Items.Add(miTargetMon);
+
             var miSettings = new MenuItem { Header = "⚙️ 关闭按钮行为", Foreground = Brushes.White };
             var miAsk = new MenuItem { Header = "每次询问", IsChecked = !_config.RememberCloseChoice || _config.CloseBehavior == 0 };
             miAsk.Click += (s, e) => { _config.RememberCloseChoice = false; _config.CloseBehavior = 0; ConfigManager.Save(_config); UpdateTrayMenu(); };
@@ -468,6 +486,53 @@ namespace ButterflyGammaPro {
                 Owner = this
             };
             updateWnd.ShowDialog();
+        }
+        private void InitMonitorsList() {
+            var monitors = DisplayManager.GetActiveMonitors();
+            var items = new List<DisplayMonitorInfo> {
+                new DisplayMonitorInfo { DisplayId = "ALL", Title = "🌐 全部显示器 (所有屏幕同步)" },
+                new DisplayMonitorInfo { DisplayId = "PRIMARY", Title = "🖥️ 仅主显示器 (竞技游戏主屏专用)" }
+            };
+            items.AddRange(monitors);
+
+            _isUpdatingUi = true;
+            CmbMonitors.ItemsSource = items;
+
+            var match = items.FirstOrDefault(i => string.Equals(i.DisplayId, _config.TargetMonitor, StringComparison.OrdinalIgnoreCase));
+            if (match != null) {
+                CmbMonitors.SelectedValue = match.DisplayId;
+            } else {
+                CmbMonitors.SelectedValue = "ALL";
+            }
+            _isUpdatingUi = false;
+        }
+
+        private void CmbMonitors_SelectionChanged(object sender, SelectionChangedEventArgs e) {
+            if (_isUpdatingUi) return;
+            string? targetId = CmbMonitors.SelectedValue as string;
+            if (!string.IsNullOrEmpty(targetId)) {
+                SelectTargetMonitor(targetId);
+            }
+        }
+
+        private void BtnRefreshMonitors_Click(object sender, RoutedEventArgs e) {
+            _gammaEngine.BackupInitialRamps();
+            InitMonitorsList();
+            var list = DisplayManager.GetActiveMonitors();
+            TxtStatus.Text = $"已刷新显示器：检测到 {list.Count} 台物理屏幕";
+            UpdateTrayMenu();
+        }
+
+        private void SelectTargetMonitor(string id) {
+            _config.TargetMonitor = id;
+            _gammaEngine.SetTargetMonitor(id);
+            ConfigManager.Save(_config);
+
+            _isUpdatingUi = true;
+            CmbMonitors.SelectedValue = id;
+            _isUpdatingUi = false;
+
+            UpdateTrayMenu();
         }
     }
 }

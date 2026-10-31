@@ -3,15 +3,38 @@
 > **Inspired by classic Gamma Panel, completely rewritten with modern WPF & C# for competitive gaming.**  
 > （灵感源于经典老牌屏幕 Gamma 工具，专为现代 Windows 10/11 与竞技游戏全面重构打造。）
 
+[![Multi-Monitor](https://img.shields.io/badge/Multi--Monitor-Native%20Hardware%20Isolation-00D2FF?style=for-the-badge&logo=windows)](https://github.com/eliauk-wzy/ButterflyGammaPro)
+[![Zero Ban Risk](https://img.shields.io/badge/Anti--Cheat-100%25%20Zero%20Ban%20Risk-10B981?style=for-the-badge&logo=shield)](https://github.com/eliauk-wzy/ButterflyGammaPro)
+[![Auto Update](https://img.shields.io/badge/Auto--Update-Seamless%20Hot%20Swap-8B5CF6?style=for-the-badge&logo=github)](https://github.com/eliauk-wzy/ButterflyGammaPro)
+
 一款专为 FPS 游戏玩家（逃离塔科夫 EFT、CS2、瓦罗兰特 Valorant、Apex、无畏契约、CF 等）打造的现代硬件级屏幕调色与暗部细节增强工具。
+
+---
+
+## ⚡ 独家重构突破：原生多显示器（Multi-Monitor）隔离调色架构
+
+> **“主屏 240Hz/360Hz 打塔科夫提亮室内暗角与老六，副屏 Discord / OBS / 交互地图保持 100% 原厂真实色彩，互不干扰！”**
+
+传统老旧 Gamma 工具与旧版程序的核心缺陷在于**在底层接口硬编码了 `GetDC(IntPtr.Zero)`**，在 Windows 多屏环境下只能粗暴作用于主屏或虚拟桌面，多屏玩家打游戏时副屏会被迫一同刺眼泛白，或副屏游戏无法生效。
+
+`Butterfly Gamma Pro` 从底层重构了显示设备上下文驱动架构，全面引入 Win32 `CreateDC` 物理设备隔离技术：
+* 🖥️ **物理显示器精准枚举**：底层通过 `EnumDisplayMonitors` + `EnumDisplayDevices` + `EnumDisplaySettings`，精准探测并枚举所有物理屏幕的设备路径（`\\.\DISPLAY1`, `\\.\DISPLAY2`...）、物理型号、原生分辨率与硬件刷新率（如 240Hz/360Hz）；
+* 🎯 **支持三重视角自由隔离与同步**：
+  1. **【🌐 全部显示器】**：所有屏幕同步提亮，适合联屏与大视野游戏需求；
+  2. **【🖥️ 仅主显示器 (竞技游戏专用)】**：只提亮前台游戏主屏，副屏的地图、攻略、聊天软件色彩丝毫不受影响；
+  3. **【📺 指定物理屏幕】**：直接指定目标显示器独立调色；
+* 🔄 **热插拔与托盘动态直切**：提供一键 `🔄` 检测刷新，托盘右键菜单同步支持实时切换目标屏幕，即点即切！
 
 ---
 
 ## 🌟 核心特性与优势 (Key Highlights)
 
 * 🛡️ **绝对安全，零封禁风险**：基于 Windows 原生硬件级色彩查找表（`SetDeviceGammaRamp`）接口调节，纯外围显示输出，**零注入、零内存读取、零 DLL Hook**，完全无视 BattlEye、VAC、EAC 等反作弊检测。
+* 🖥️ **原生多显示器物理隔离**：告别主副屏冲突，支持独立绑定或全局同步调节。
+* 🚀 **内置自动检测更新与一键热替换**：启动时后台静默检测 GitHub Releases 最新版本，主界面与托盘支持手动一键检查更新，发现新版一键自动下载并热替换自重启。
+* 🎮 **全屏独占穿透热键**：基于 Win32 底层全局键盘钩子（`WH_KEYBOARD_LL`）与管理员权限清单，无视游戏独占与 UIPI 阻断，游戏中免按 Win 键秒切滤镜。
 * 🔒 **单实例互斥唤醒**：内置全局进程互斥锁，多开自动唤醒前台窗口，彻底防止双进程冲突导致的画面频闪与热键失效。
-* ⌨️ **热键占用冲突自检**：实时检测热键状态，若 F7~F12 等热键被 GeForce Experience、Discord 或游戏内置快捷键占用，状态栏将第一时间予以友好高亮告警。
+* ⌨️ **热键占用冲突自检**：实时检测热键状态，若 F7~F12 等热键被 GeForce Experience、Discord 或游戏内置快捷键占用，状态栏第一时间友好高亮告警。
 * 🎨 **沉浸式深色电竞托盘菜单**：原生 Win32 + WPF 深度定制深色半透明托盘右键菜单，彻底告别老旧 WinForms 原生白底菜单的突兀感。
 * ✏️ **支持键盘精确填数**：右上角数字框（Gamma、对比度、亮度）支持直接点击输入数值，与滑块双向实时联动，适配各种国际数字格式。
 * 🎯 **支持无限自由增删滤镜**：随时点击【➕ 添加滤镜】，任意命名并绑定快捷键（F1~F12 等）。
@@ -20,7 +43,6 @@
 * 🛡️ **防掉滤镜守护心跳 (Anti-Reset)**：游戏切全屏、换图若重置了硬件色彩，后台自动在 1 秒内无感恢复。
 * 🛡️ **异常崩溃还原兜底**：进程退出、异常崩溃时自动触发 GDI 兜底还原，防止屏幕残留过曝色彩。
 * ⚙️ **灵活的关闭行为记忆**：点击右上角关闭(✕)、按 Alt+F4 或任务栏关闭时，严格遵循记住的最小化至托盘或彻底退出选项。
-* 🚀 **内置自动检测更新与一键热替换**：启动时后台静默检测 GitHub Releases 最新版本，主界面与托盘支持手动一键检查更新，发现新版一键自动下载并热替换重启。
 
 ---
 
@@ -29,7 +51,7 @@
 | 程序文件 | 体积 | 依赖条件 | 推荐适用人群 |
 | :--- | :---: | :---: | :--- |
 | **`小蝴蝶滤镜_Pro.exe`** | **~71 MB** | **零依赖**（免安装） | 任何 Win10/Win11 电脑开箱即用，双击直接运行，适合打包分享给队友 |
-| **`小蝴蝶滤镜_Pro_极速轻巧版.exe`** | **~443 KB** | 需要 **.NET 8** 桌面运行时 | 追求极致微型体积（体积缩小 99.4%），启动无感，适合已有环境的玩家 |
+| **`小蝴蝶滤镜_Pro_极速轻巧版.exe`** | **~306 KB** | 需要 **.NET 8** 桌面运行时 | 追求极致微型体积（体积缩小 99.5%），启动无感，适合已有环境的玩家 |
 
 ---
 

@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -12,12 +14,6 @@ namespace ButterflyGammaPro.Services {
 
         [DllImport("gdi32.dll", SetLastError = true)]
         private static extern bool GetDeviceGammaRamp(IntPtr hDC, ref RAMP lpRamp);
-
-        [DllImport("user32.dll")]
-        private static extern IntPtr GetDC(IntPtr hWnd);
-
-        [DllImport("user32.dll")]
-        private static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
 
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
         public struct RAMP {
@@ -51,7 +47,8 @@ namespace ButterflyGammaPro.Services {
             }
         }
 
-        private RAMP _originalRamp = RAMP.CreateDefaultLinear();
+        private readonly RAMP _fallbackLinearRamp = RAMP.CreateDefaultLinear();
+        private readonly Dictionary<string, RAMP> _initialRamps = new(StringComparer.OrdinalIgnoreCase);
         private RAMP _currentRamp = RAMP.CreateDefaultLinear();
         private RAMP _targetRamp = RAMP.CreateDefaultLinear();
         private CancellationTokenSource? _transitionCts;
@@ -62,53 +59,121 @@ namespace ButterflyGammaPro.Services {
         public int TransitionDurationMs { get; set; } = 120;
         public GammaProfile? ActiveProfile { get; private set; }
 
-        public GammaEngine() {
-            BackupInitialRamp();
+        /// <summary>
+        /// 目标屏幕：
+        /// "ALL" = 全部显示器
+        /// "PRIMARY" = 仅主显示器
+        /// @"\\.\DISPLAY1" 等 = 指定具体显示器
+        /// </summary>
+        public string TargetMonitorId { get; set; } = "ALL";
 
-            // 进程退出时强制还原硬件色彩防异常暴光
+        public GammaEngine() {
+            BackupInitialRamps();
+
+            // 进程退出或异常崩溃时，安全还原所有显示器的硬件色彩
             AppDomain.CurrentDomain.ProcessExit += (s, e) => RestoreHardwareSafely();
             AppDomain.CurrentDomain.UnhandledException += (s, e) => RestoreHardwareSafely();
 
+            // 防掉滤镜守护心跳：定期轮询目标屏幕的色彩状态，若被全屏独占游戏或切屏重置，则秒级自动回正
             _antiResetTimer = new System.Threading.Timer(_ => {
                 if (!AntiResetEnabled || ActiveProfile == null) return;
-                IntPtr hdc = GetDC(IntPtr.Zero);
-                if (hdc == IntPtr.Zero) return;
-                try {
-                    RAMP cur = RAMP.CreateEmpty();
-                    if (GetDeviceGammaRamp(hdc, ref cur)) {
-                        int diff = Math.Abs(cur.Red[128] - _targetRamp.Red[128]);
-                        if (diff > 1500) {
-                            lock (_rampLock) {
-                                SetDeviceGammaRamp(hdc, ref _targetRamp);
+                var targets = ResolveTargetDevices();
+                foreach (var dev in targets) {
+                    IntPtr hdc = DisplayManager.GetMonitorDC(dev, out bool needsDelete);
+                    if (hdc == IntPtr.Zero) continue;
+                    try {
+                        RAMP cur = RAMP.CreateEmpty();
+                        if (GetDeviceGammaRamp(hdc, ref cur)) {
+                            int diff = Math.Abs(cur.Red[128] - _targetRamp.Red[128]);
+                            if (diff > 1500) {
+                                lock (_rampLock) {
+                                    SetDeviceGammaRamp(hdc, ref _targetRamp);
+                                }
                             }
                         }
+                    } finally {
+                        DisplayManager.ReleaseMonitorDC(hdc, needsDelete);
                     }
-                } finally {
-                    ReleaseDC(IntPtr.Zero, hdc);
                 }
             }, null, 1500, 1200);
         }
 
-        private void RestoreHardwareSafely() {
-            try {
-                SetHardwareRamp(_originalRamp);
-            } catch {}
-        }
-
-        private void BackupInitialRamp() {
-            IntPtr hdc = GetDC(IntPtr.Zero);
-            if (hdc != IntPtr.Zero) {
-                try {
-                    RAMP cur = RAMP.CreateEmpty();
-                    if (GetDeviceGammaRamp(hdc, ref cur)) {
-                        _originalRamp = cur.Clone();
-                        _currentRamp = cur.Clone();
-                        _targetRamp = cur.Clone();
+        public void BackupInitialRamps() {
+            var monitors = DisplayManager.GetActiveMonitors();
+            foreach (var mon in monitors) {
+                IntPtr hdc = DisplayManager.GetMonitorDC(mon.DeviceName, out bool needsDelete);
+                if (hdc != IntPtr.Zero) {
+                    try {
+                        RAMP cur = RAMP.CreateEmpty();
+                        if (GetDeviceGammaRamp(hdc, ref cur)) {
+                            _initialRamps[mon.DeviceName] = cur.Clone();
+                        }
+                    } finally {
+                        DisplayManager.ReleaseMonitorDC(hdc, needsDelete);
                     }
-                } finally {
-                    ReleaseDC(IntPtr.Zero, hdc);
                 }
             }
+        }
+
+        public void SetTargetMonitor(string targetMonitorId) {
+            lock (_rampLock) {
+                TargetMonitorId = targetMonitorId;
+                var currentTargets = new HashSet<string>(ResolveTargetDevices(), StringComparer.OrdinalIgnoreCase);
+                var allMonitors = DisplayManager.GetActiveMonitors();
+
+                // 将非目标屏幕恢复原厂初始色彩
+                foreach (var mon in allMonitors) {
+                    if (!currentTargets.Contains(mon.DeviceName)) {
+                        if (_initialRamps.TryGetValue(mon.DeviceName, out var orig)) {
+                            ApplyRampToDevice(mon.DeviceName, orig);
+                        } else {
+                            ApplyRampToDevice(mon.DeviceName, _fallbackLinearRamp);
+                        }
+                    }
+                }
+
+                // 如果当前处于滤镜激活状态，将滤镜应用到新目标屏幕
+                if (ActiveProfile != null) {
+                    foreach (var dev in currentTargets) {
+                        ApplyRampToDevice(dev, _targetRamp);
+                    }
+                }
+            }
+        }
+
+        public List<string> ResolveTargetDevices() {
+            var active = DisplayManager.GetActiveMonitors();
+            if (active.Count == 0) return new List<string> { "" };
+
+            if (string.Equals(TargetMonitorId, "ALL", StringComparison.OrdinalIgnoreCase)) {
+                return active.Select(m => m.DeviceName).ToList();
+            }
+
+            if (string.Equals(TargetMonitorId, "PRIMARY", StringComparison.OrdinalIgnoreCase)) {
+                var p = active.Find(m => m.IsPrimary) ?? active[0];
+                return new List<string> { p.DeviceName };
+            }
+
+            var match = active.Find(m => string.Equals(m.DeviceName, TargetMonitorId, StringComparison.OrdinalIgnoreCase));
+            if (match != null) {
+                return new List<string> { match.DeviceName };
+            }
+
+            // 找不到匹配时兜底全部
+            return active.Select(m => m.DeviceName).ToList();
+        }
+
+        private void RestoreHardwareSafely() {
+            try {
+                var monitors = DisplayManager.GetActiveMonitors();
+                foreach (var mon in monitors) {
+                    if (_initialRamps.TryGetValue(mon.DeviceName, out var orig)) {
+                        ApplyRampToDevice(mon.DeviceName, orig);
+                    } else {
+                        ApplyRampToDevice(mon.DeviceName, _fallbackLinearRamp);
+                    }
+                }
+            } catch { }
         }
 
         public void ApplyProfile(GammaProfile profile, bool immediate = false) {
@@ -119,7 +184,7 @@ namespace ButterflyGammaPro.Services {
 
         public void ResetToDefault(bool immediate = false) {
             ActiveProfile = null;
-            TransitionToRamp(_originalRamp, immediate ? 0 : TransitionDurationMs);
+            TransitionToRamp(_fallbackLinearRamp, immediate ? 0 : TransitionDurationMs);
         }
 
         public static RAMP CalculateRamp(ColorChannel red, ColorChannel green, ColorChannel blue) {
@@ -151,9 +216,11 @@ namespace ButterflyGammaPro.Services {
                 var token = _transitionCts.Token;
                 _targetRamp = target.Clone();
 
+                var targetDevices = ResolveTargetDevices();
+
                 if (durationMs <= 0) {
                     _currentRamp = target.Clone();
-                    SetHardwareRamp(_targetRamp);
+                    ApplyRampToDevices(targetDevices, _targetRamp);
                     return;
                 }
 
@@ -172,7 +239,7 @@ namespace ButterflyGammaPro.Services {
                         }
                         lock (_rampLock) {
                             _currentRamp = inter;
-                            SetHardwareRamp(_currentRamp);
+                            ApplyRampToDevices(targetDevices, _currentRamp);
                         }
                         try {
                             await Task.Delay(interval, token).ConfigureAwait(false);
@@ -184,20 +251,26 @@ namespace ButterflyGammaPro.Services {
                     if (!token.IsCancellationRequested) {
                         lock (_rampLock) {
                             _currentRamp = target.Clone();
-                            SetHardwareRamp(_targetRamp);
+                            ApplyRampToDevices(targetDevices, _targetRamp);
                         }
                     }
                 }, token);
             }
         }
 
-        private static bool SetHardwareRamp(RAMP ramp) {
-            IntPtr hdc = GetDC(IntPtr.Zero);
+        private static void ApplyRampToDevices(IEnumerable<string> devices, RAMP ramp) {
+            foreach (var dev in devices) {
+                ApplyRampToDevice(dev, ramp);
+            }
+        }
+
+        private static bool ApplyRampToDevice(string deviceName, RAMP ramp) {
+            IntPtr hdc = DisplayManager.GetMonitorDC(deviceName, out bool needsDelete);
             if (hdc == IntPtr.Zero) return false;
             try {
                 return SetDeviceGammaRamp(hdc, ref ramp);
             } finally {
-                ReleaseDC(IntPtr.Zero, hdc);
+                DisplayManager.ReleaseMonitorDC(hdc, needsDelete);
             }
         }
 
