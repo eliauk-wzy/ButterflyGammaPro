@@ -23,7 +23,7 @@ namespace ButterflyGammaPro.Services {
     }
 
     public static class UpdateService {
-        public const string CurrentVersion = "1.0.1";
+        public const string CurrentVersion = "1.0.2";
         private const string RepoOwner = "eliauk-wzy";
         private const string RepoName = "ButterflyGammaPro";
         private static readonly string ApiLatestUrl = $"https://api.github.com/repos/{RepoOwner}/{RepoName}/releases/latest";

@@ -153,13 +153,35 @@
                     <Grid>
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
                             <RowDefinition Height="*"/>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
 
+                        <!-- 0. 目标屏幕 (原生多显示器架构支持) -->
+                        <Grid Grid.Row="0" Margin="0,0,0,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,8,0">
+                                <TextBlock Text="🖥️" FontSize="13" Margin="0,0,4,0" VerticalAlignment="Center"/>
+                                <TextBlock Text="目标屏幕" Foreground="#94A3B8" FontSize="11" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <ComboBox x:Name="CmbMonitors" Grid.Column="1" Height="28" Background="#0F172A" Foreground="#38BDF8" BorderBrush="#334155" FontSize="11.5" DisplayMemberPath="Title" SelectedValuePath="DisplayId" SelectionChanged="CmbMonitors_SelectionChanged"/>
+                            <Button x:Name="BtnRefreshMonitors" Grid.Column="2" Content="🔄" Width="28" Height="28" Background="#0F172A" Foreground="#38BDF8" BorderBrush="#334155" BorderThickness="1" Margin="6,0,0,0" ToolTip="重新检测连接的显示器" Cursor="Hand" Click="BtnRefreshMonitors_Click">
+                                <Button.Resources>
+                                    <Style TargetType="Border">
+                                        <Setter Property="CornerRadius" Value="4"/>
+                                    </Style>
+                                </Button.Resources>
+                            </Button>
+                        </Grid>
+
                         <!-- 基础配置 -->
-                        <Grid Grid.Row="0" Margin="0,0,0,14">
+                        <Grid Grid.Row="1" Margin="0,0,0,12">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="130"/>
@@ -177,7 +199,7 @@
                         </Grid>
 
                         <!-- 滑块调色区 (支持直接输入数字) -->
-                        <StackPanel Grid.Row="1" VerticalAlignment="Center">
+                        <StackPanel Grid.Row="2" VerticalAlignment="Center">
                             <!-- 1. Gamma -->
                             <Grid Margin="0,2,0,2">
                                 <TextBlock Text="灰度伽马 (Gamma / 核心暗角提亮)" Foreground="#CBD5E1" FontSize="12" VerticalAlignment="Center"/>
@@ -215,14 +237,14 @@
                         </StackPanel>
 
                         <!-- 全局开关 -->
-                        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,8,0,12">
+                        <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,8,0,12">
                             <CheckBox x:Name="ChkOsd" Content="游戏内按键浮窗提示" Foreground="#94A3B8" FontSize="12" Margin="0,0,16,0" IsChecked="True"/>
                             <CheckBox x:Name="ChkTransition" Content="120ms平滑过渡 (防晃眼)" Foreground="#94A3B8" FontSize="12" Margin="0,0,16,0" IsChecked="True"/>
                             <CheckBox x:Name="ChkAntiReset" Content="防切屏掉滤镜" Foreground="#94A3B8" FontSize="12" IsChecked="True"/>
                         </StackPanel>
 
                         <!-- 操作按钮 -->
-                        <Grid Grid.Row="3">
+                        <Grid Grid.Row="4">
                             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                                 <Button Content="🌟 立即应用此滤镜" Width="120" Height="32" Background="#2563EB" Foreground="#FFFFFF" BorderThickness="0" FontWeight="SemiBold" Cursor="Hand" Margin="0,0,10,0" Click="BtnApplyCurrent_Click"/>
                                 <Button Content="🖥️ 恢复正常屏幕" Width="120" Height="32" Background="#334155" Foreground="#E2E8F0" BorderThickness="0" Cursor="Hand" Click="BtnResetDefault_Click"/>

@@ -89,6 +89,7 @@ namespace ButterflyGammaPro.Models
         public bool EnableTransition { get; set; } = true;
         public bool AntiResetLock { get; set; } = true;
         public string ActiveProfileId { get; set; } = "";
+        public string TargetMonitor { get; set; } = "ALL";
         
         public int CloseBehavior { get; set; } = 0;
         public bool RememberCloseChoice { get; set; } = false;
