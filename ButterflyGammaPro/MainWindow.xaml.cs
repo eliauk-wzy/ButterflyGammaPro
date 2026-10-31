@@ -124,6 +124,13 @@ namespace ButterflyGammaPro {
 
             menu.Items.Add(new Separator { Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#334155")) });
 
+            var miUpdate = new MenuItem { Header = "🔄 检查更新...", Foreground = Brushes.White };
+            miUpdate.Click += async (s, e) => {
+                ShowWindow();
+                await CheckForUpdatesManually();
+            };
+            menu.Items.Add(miUpdate);
+
             var miExit = new MenuItem { Header = "❌ 彻底退出程序", Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#EF4444")) };
             miExit.Click += (s, e) => ExitApplication();
             menu.Items.Add(miExit);
@@ -428,6 +435,39 @@ namespace ButterflyGammaPro {
 
         private void TitleBar_MouseDown(object sender, MouseButtonEventArgs e) {
             if (e.LeftButton == MouseButtonState.Pressed) this.DragMove();
+        }
+        private async void BtnCheckUpdate_Click(object sender, RoutedEventArgs e) {
+            await CheckForUpdatesManually();
+        }
+
+        private async Task CheckForUpdatesManually() {
+            BtnCheckUpdate.IsEnabled = false;
+            BtnCheckUpdate.Content = "⏳ 检查中...";
+            try {
+                var updateInfo = await ButterflyGammaPro.Services.UpdateService.CheckForUpdatesAsync();
+                if (updateInfo == null) {
+                    MessageBox.Show("未能连接到 GitHub 更新服务器，请稍后重试或检查网络设置。", "检查更新", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+
+                if (updateInfo.HasUpdate) {
+                    ShowUpdateDialog(updateInfo);
+                } else {
+                    MessageBox.Show($"当前已是最新版本 (v{ButterflyGammaPro.Services.UpdateService.CurrentVersion})，无需更新！", "检查更新", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+            } catch (Exception ex) {
+                MessageBox.Show($"检查更新发生异常: {ex.Message}", "检查更新", MessageBoxButton.OK, MessageBoxImage.Warning);
+            } finally {
+                BtnCheckUpdate.IsEnabled = true;
+                BtnCheckUpdate.Content = "🔄 检查更新";
+            }
+        }
+
+        private void ShowUpdateDialog(ButterflyGammaPro.Services.UpdateInfo updateInfo) {
+            var updateWnd = new ButterflyGammaPro.Views.UpdateWindow(updateInfo) {
+                Owner = this
+            };
+            updateWnd.ShowDialog();
         }
     }
 }
