@@ -9,9 +9,9 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <RootNamespace>ButterflyGammaPro</RootNamespace>
     <AssemblyName>ButterflyGammaPro</AssemblyName>
-    <Version>1.0.3</Version>
-    <AssemblyVersion>1.0.3.0</AssemblyVersion>
-    <FileVersion>1.0.3.0</FileVersion>
+    <Version>1.0.4</Version>
+    <AssemblyVersion>1.0.4.0</AssemblyVersion>
+    <FileVersion>1.0.4.0</FileVersion>
     
     <!-- 单文件自包含发布 -->
     <PublishSingleFile>true</PublishSingleFile>
