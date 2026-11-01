@@ -91,19 +91,36 @@ namespace ButterflyGammaPro {
                 if (waitPid > 0) {
                     try {
                         var proc = Process.GetProcessById(waitPid);
-                        proc.WaitForExit(6000);
+                        proc.WaitForExit(8000);
                     } catch { }
                 }
 
-                Thread.Sleep(300);
+                Thread.Sleep(500);
 
                 string myPath = Environment.ProcessPath ?? Environment.GetCommandLineArgs()[0];
                 if (File.Exists(myPath) && !string.Equals(myPath, targetExe, StringComparison.OrdinalIgnoreCase)) {
-                    File.Copy(myPath, targetExe, true);
-                    Process.Start(new ProcessStartInfo {
-                        FileName = targetExe,
-                        UseShellExecute = true
-                    });
+                    bool copied = false;
+                    for (int attempt = 0; attempt < 20; attempt++) {
+                        try {
+                            string tempBackup = targetExe + ".old_" + Environment.TickCount;
+                            if (File.Exists(targetExe)) {
+                                try { File.Move(targetExe, tempBackup, true); } catch { }
+                            }
+                            File.Copy(myPath, targetExe, true);
+                            try { if (File.Exists(tempBackup)) File.Delete(tempBackup); } catch { }
+                            copied = true;
+                            break;
+                        } catch {
+                            Thread.Sleep(300);
+                        }
+                    }
+
+                    if (copied) {
+                        Process.Start(new ProcessStartInfo {
+                            FileName = targetExe,
+                            UseShellExecute = true
+                        });
+                    }
                 }
             } catch { }
         }

@@ -1,7 +1,10 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
+using System.Linq;
 using System.Net.Http;
+using System.Reflection;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -19,25 +22,42 @@ namespace ButterflyGammaPro.Services {
         public string DownloadUrl { get; set; } = "";
         public string DownloadFileName { get; set; } = "";
         public long FileSize { get; set; }
+        public bool IsZipArchive { get; set; }
     }
 
     public static class UpdateService {
-        public const string CurrentVersion = "1.0.2";
+        // 动态读取当前程序集版本号，彻底避免版本号硬编码偏差
+        public static string CurrentVersion {
+            get {
+                var v = Assembly.GetExecutingAssembly().GetName().Version;
+                return v != null ? $"{v.Major}.{v.Minor}.{v.Build}" : "1.0.4";
+            }
+        }
+
         private const string RepoOwner = "eliauk-wzy";
         private const string RepoName = "ButterflyGammaPro";
 
-        // 多端点网络加速（包含官方 API 与国内加速镜像节点，彻底解决 DNS 污染与 Rate Limit）
+        // 多端点网络加速（包含官方 API 与国内主流加速镜像节点）
         private static readonly string[] Endpoints = new[] {
             $"https://api.github.com/repos/{RepoOwner}/{RepoName}/releases/latest",
-            $"https://fastly.jsdelivr.net/gh/{RepoOwner}/{RepoName}@main/release_info.json",
-            $"https://mirror.ghproxy.com/https://raw.githubusercontent.com/{RepoOwner}/{RepoName}/main/release_info.json"
+            $"https://mirror.ghproxy.com/https://api.github.com/repos/{RepoOwner}/{RepoName}/releases/latest",
+            $"https://ghproxy.net/https://api.github.com/repos/{RepoOwner}/{RepoName}/releases/latest",
+            $"https://fastly.jsdelivr.net/gh/{RepoOwner}/{RepoName}@main/release_info.json"
+        };
+
+        // 国内高速下载镜像加速前缀
+        private static readonly string[] DownloadMirrors = new[] {
+            "https://mirror.ghproxy.com/",
+            "https://ghproxy.net/",
+            "https://gh-proxy.com/",
+            "" // 直连兜底
         };
 
         public static async Task<UpdateInfo?> CheckForUpdatesAsync(CancellationToken ct = default) {
             foreach (var url in Endpoints) {
                 try {
                     using var client = new HttpClient();
-                    client.Timeout = TimeSpan.FromSeconds(8);
+                    client.Timeout = TimeSpan.FromSeconds(6);
                     client.DefaultRequestHeaders.UserAgent.ParseAdd("ButterflyGammaPro-AutoUpdater/1.0");
 
                     var response = await client.GetAsync(url, ct).ConfigureAwait(false);
@@ -66,50 +86,76 @@ namespace ButterflyGammaPro.Services {
 
                     string currentExePath = Environment.ProcessPath ?? "";
                     string currentExeName = Path.GetFileName(currentExePath);
-                    bool isLightweight = currentExeName.Contains("极速轻巧版", StringComparison.OrdinalIgnoreCase);
+                    bool isLightweight = currentExeName.Contains("极速轻巧版", StringComparison.OrdinalIgnoreCase) ||
+                                         currentExeName.Contains("Lightweight", StringComparison.OrdinalIgnoreCase);
 
                     string downloadUrl = "";
                     string downloadFileName = "";
                     long fileSize = 0;
+                    bool isZip = false;
 
                     if (root.TryGetProperty("assets", out var assetsElem) && assetsElem.ValueKind == JsonValueKind.Array) {
-                        string fallbackUrl = "";
-                        string fallbackName = "";
-                        long fallbackSize = 0;
+                        string zipUrl = "";
+                        string zipName = "";
+                        long zipSize = 0;
+
+                        string anyExeUrl = "";
+                        string anyExeName = "";
+                        long anyExeSize = 0;
 
                         foreach (var asset in assetsElem.EnumerateArray()) {
                             string aName = asset.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
                             string aUrl = asset.TryGetProperty("browser_download_url", out var u) ? u.GetString() ?? "" : "";
                             long aSize = asset.TryGetProperty("size", out var s) ? s.GetInt64() : 0;
 
-                            if (isLightweight && (aName.Contains("极速轻巧版") || aName.Contains("Lightweight"))) {
-                                downloadUrl = aUrl;
-                                downloadFileName = aName;
-                                fileSize = aSize;
-                                break;
-                            } else if (!isLightweight && (aName.Contains("小蝴蝶滤镜_Pro.exe") || aName.Contains("Standalone"))) {
-                                downloadUrl = aUrl;
-                                downloadFileName = aName;
-                                fileSize = aSize;
-                                break;
+                            if (isLightweight) {
+                                if (aName.Contains("极速轻巧版", StringComparison.OrdinalIgnoreCase) ||
+                                    aName.Contains("Lightweight", StringComparison.OrdinalIgnoreCase)) {
+                                    downloadUrl = aUrl;
+                                    downloadFileName = aName;
+                                    fileSize = aSize;
+                                    break;
+                                }
+                            } else {
+                                if (aName.Contains("小蝴蝶滤镜_Pro.exe", StringComparison.OrdinalIgnoreCase) ||
+                                    aName.Contains("Standalone", StringComparison.OrdinalIgnoreCase) ||
+                                    (aName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && !aName.Contains("Lightweight") && !aName.Contains("极速轻巧版"))) {
+                                    downloadUrl = aUrl;
+                                    downloadFileName = aName;
+                                    fileSize = aSize;
+                                    break;
+                                }
                             }
 
-                            if (aName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && string.IsNullOrEmpty(fallbackUrl)) {
-                                fallbackUrl = aUrl;
-                                fallbackName = aName;
-                                fallbackSize = aSize;
-                            } else if (aName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) && string.IsNullOrEmpty(fallbackUrl)) {
-                                fallbackUrl = aUrl;
-                                fallbackName = aName;
-                                fallbackSize = aSize;
+                            if (aName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)) {
+                                zipUrl = aUrl;
+                                zipName = aName;
+                                zipSize = aSize;
+                            } else if (aName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && string.IsNullOrEmpty(anyExeUrl)) {
+                                anyExeUrl = aUrl;
+                                anyExeName = aName;
+                                anyExeSize = aSize;
                             }
                         }
 
-                        if (string.IsNullOrEmpty(downloadUrl)) {
-                            downloadUrl = fallbackUrl;
-                            downloadFileName = fallbackName;
-                            fileSize = fallbackSize;
+                        // 核心突破：若未提供专属直链 exe，但有 zip 压缩包，软件内部自动下载 zip 并在后台静默解压替换！
+                        if (string.IsNullOrEmpty(downloadUrl) && !string.IsNullOrEmpty(zipUrl)) {
+                            downloadUrl = zipUrl;
+                            downloadFileName = zipName;
+                            fileSize = zipSize;
+                            isZip = true;
+                        } else if (string.IsNullOrEmpty(downloadUrl) && !string.IsNullOrEmpty(anyExeUrl)) {
+                            downloadUrl = anyExeUrl;
+                            downloadFileName = anyExeName;
+                            fileSize = anyExeSize;
                         }
+                    }
+
+                    // 兜底保护：若 release assets 暂缺任何文件，自动采用 GitHub 官方源码/归档 zip
+                    if (string.IsNullOrEmpty(downloadUrl)) {
+                        downloadUrl = $"https://github.com/{RepoOwner}/{RepoName}/archive/refs/tags/{tagName}.zip";
+                        downloadFileName = $"{RepoName}-{tagName}.zip";
+                        isZip = true;
                     }
 
                     return new UpdateInfo {
@@ -122,7 +168,8 @@ namespace ButterflyGammaPro.Services {
                         HtmlUrl = htmlUrl,
                         DownloadUrl = downloadUrl,
                         DownloadFileName = downloadFileName,
-                        FileSize = fileSize
+                        FileSize = fileSize,
+                        IsZipArchive = isZip
                     };
                 } catch { }
             }
@@ -143,19 +190,22 @@ namespace ButterflyGammaPro.Services {
             }
 
             string targetFileName = Path.GetFileName(currentExePath);
+            bool isLightweight = targetFileName.Contains("极速轻巧版", StringComparison.OrdinalIgnoreCase) ||
+                                 targetFileName.Contains("Lightweight", StringComparison.OrdinalIgnoreCase);
+
             string tempDownloadedFile = Path.Combine(tempDir, string.IsNullOrEmpty(update.DownloadFileName) ? targetFileName : update.DownloadFileName);
 
-            // 支持镜像多节点下载回退
-            string[] downloadUrls = new[] {
-                update.DownloadUrl,
-                $"https://mirror.ghproxy.com/{update.DownloadUrl}"
-            };
+            // 构建国内多镜像快速下载降级队列
+            var candidateUrls = DownloadMirrors
+                .Select(m => string.IsNullOrEmpty(m) ? update.DownloadUrl : (m.EndsWith("/") ? m + update.DownloadUrl : m + "/" + update.DownloadUrl))
+                .Distinct()
+                .ToList();
 
             bool downloadSuccess = false;
-            foreach (var dUrl in downloadUrls) {
+            foreach (var dUrl in candidateUrls) {
                 try {
                     using var client = new HttpClient();
-                    client.Timeout = TimeSpan.FromMinutes(4);
+                    client.Timeout = TimeSpan.FromMinutes(5);
                     client.DefaultRequestHeaders.UserAgent.ParseAdd("ButterflyGammaPro-AutoUpdater/1.0");
 
                     using var response = await client.GetAsync(dUrl, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
@@ -167,7 +217,7 @@ namespace ButterflyGammaPro.Services {
                     using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
                     using var fileStream = new FileStream(tempDownloadedFile, FileMode.Create, FileAccess.Write, FileShare.None, 8192, true);
 
-                    var buffer = new byte[16384];
+                    var buffer = new byte[32768];
                     long totalRead = 0;
                     int read;
 
@@ -175,8 +225,8 @@ namespace ButterflyGammaPro.Services {
                         await fileStream.WriteAsync(buffer, 0, read, ct).ConfigureAwait(false);
                         totalRead += read;
                         if (totalBytes.HasValue && totalBytes.Value > 0) {
-                            double p = (double)totalRead / totalBytes.Value;
-                            progress.Report(Math.Clamp(p, 0.0, 1.0));
+                            double p = ((double)totalRead / totalBytes.Value) * 0.90; // 下载占 90%
+                            progress.Report(Math.Clamp(p, 0.0, 0.90));
                         }
                     }
                     downloadSuccess = true;
@@ -185,33 +235,61 @@ namespace ButterflyGammaPro.Services {
             }
 
             if (!downloadSuccess) {
-                throw new IOException("无法从任何下载节点拉取更新，请点击【浏览器打开】手动更新。");
+                throw new IOException("无法从任何加速镜像节点下载新版，请检查您的网络连接后重试。");
+            }
+
+            progress.Report(0.92);
+
+            string finalExeToLaunch = tempDownloadedFile;
+
+            // 核心突破：若下载的是 zip 压缩包，软件在内部自动无缝解压，提取出与当前版本匹配的 exe 进行热替换！
+            if (tempDownloadedFile.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)) {
+                progress.Report(0.95);
+                string extractDir = Path.Combine(tempDir, "Extracted_" + DateTime.Now.Ticks);
+                Directory.CreateDirectory(extractDir);
+
+                await Task.Run(() => {
+                    ZipFile.ExtractToDirectory(tempDownloadedFile, extractDir, true);
+                }, ct).ConfigureAwait(false);
+
+                var allExes = Directory.GetFiles(extractDir, "*.exe", SearchOption.AllDirectories);
+                string matchedExe = "";
+                if (isLightweight) {
+                    matchedExe = allExes.FirstOrDefault(f => Path.GetFileName(f).Contains("极速轻巧版", StringComparison.OrdinalIgnoreCase) ||
+                                                             Path.GetFileName(f).Contains("Lightweight", StringComparison.OrdinalIgnoreCase)) ?? "";
+                } else {
+                    matchedExe = allExes.FirstOrDefault(f => Path.GetFileName(f).Contains("小蝴蝶滤镜_Pro.exe", StringComparison.OrdinalIgnoreCase) ||
+                                                             (!Path.GetFileName(f).Contains("轻巧", StringComparison.OrdinalIgnoreCase) &&
+                                                              !Path.GetFileName(f).Contains("Lightweight", StringComparison.OrdinalIgnoreCase))) ?? "";
+                }
+
+                if (string.IsNullOrEmpty(matchedExe) && allExes.Length > 0) {
+                    matchedExe = allExes[0];
+                }
+
+                if (string.IsNullOrEmpty(matchedExe)) {
+                    throw new FileNotFoundException("更新压缩包中未检测到可执行程序，无法完成自动安装。");
+                }
+
+                finalExeToLaunch = matchedExe;
             }
 
             progress.Report(1.0);
 
             // 彻底告别高危 .bat 脚本与杀毒软件误报！
-            // 由新版本 exe 自带的 --replace-old 参数接管安全无损的原地自替换
-            if (tempDownloadedFile.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) {
-                int currentPid = Process.GetCurrentProcess().Id;
-                var psi = new ProcessStartInfo {
-                    FileName = tempDownloadedFile,
-                    Arguments = $"--replace-old \"{currentExePath}\" --wait-pid {currentPid}",
-                    UseShellExecute = true
-                };
+            // 由新版本 exe 自带的 --replace-old 参数接管安全无损的原地自替换并自启动
+            int currentPid = Process.GetCurrentProcess().Id;
+            var psi = new ProcessStartInfo {
+                FileName = finalExeToLaunch,
+                Arguments = $"--replace-old \"{currentExePath}\" --wait-pid {currentPid}",
+                UseShellExecute = true
+            };
 
-                Process.Start(psi);
+            Process.Start(psi);
 
-                Application.Current.Dispatcher.Invoke(() => {
-                    Application.Current.Shutdown();
-                });
-            } else {
-                Process.Start(new ProcessStartInfo {
-                    FileName = "explorer.exe",
-                    Arguments = $"/select,\"{tempDownloadedFile}\"",
-                    UseShellExecute = true
-                });
-            }
+            Application.Current.Dispatcher.Invoke(() => {
+                Application.Current.Shutdown();
+            });
         }
     }
 }

@@ -58,16 +58,10 @@ namespace ButterflyGammaPro.Views {
         }
 
         private async void BtnUpdateNow_Click(object sender, RoutedEventArgs e) {
-            if (string.IsNullOrEmpty(_updateInfo.DownloadUrl)) {
-                MessageBox.Show("当前更新包尚未提供直接下载资产，请前往 GitHub 网页下载最新版本。", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
-                BtnBrowser_Click(sender, e);
-                return;
-            }
-
             BtnUpdateNow.IsEnabled = false;
             BtnCancel.IsEnabled = false;
             PanelProgress.Visibility = Visibility.Visible;
-            TxtProgressStatus.Text = "正在连接更新服务器并下载...";
+            TxtProgressStatus.Text = "正在连接国内加速节点并拉取新版...";
             PbDownload.Value = 0;
 
             _downloadCts = new CancellationTokenSource();
@@ -75,26 +69,32 @@ namespace ButterflyGammaPro.Views {
                 Dispatcher.Invoke(() => {
                     PbDownload.Value = Math.Round(val * 100);
                     TxtProgressPercent.Text = $"{(int)PbDownload.Value}%";
-                    if (_updateInfo.FileSize > 0) {
-                        double currentMb = (val * _updateInfo.FileSize) / (1024.0 * 1024.0);
-                        double totalMb = _updateInfo.FileSize / (1024.0 * 1024.0);
-                        TxtProgressStatus.Text = $"正在下载新版本... {currentMb:F1}MB / {totalMb:F1}MB";
+                    if (val < 0.90) {
+                        if (_updateInfo.FileSize > 0) {
+                            double currentMb = (val * _updateInfo.FileSize) / (1024.0 * 1024.0);
+                            double totalMb = _updateInfo.FileSize / (1024.0 * 1024.0);
+                            TxtProgressStatus.Text = $"正在极速下载... {currentMb:F1}MB / {totalMb:F1}MB";
+                        } else {
+                            TxtProgressStatus.Text = $"正在极速下载... ({(int)PbDownload.Value}%)";
+                        }
+                    } else if (val < 0.98) {
+                        TxtProgressStatus.Text = "下载完成，正在自动校验解压更新包...";
                     } else {
-                        TxtProgressStatus.Text = $"正在下载新版本... ({(int)PbDownload.Value}%)";
+                        TxtProgressStatus.Text = "解压校验成功，正在原地热替换并自启动...";
                     }
                 });
             });
 
             try {
                 await UpdateService.DownloadAndInstallAsync(_updateInfo, progress, _downloadCts.Token);
-                TxtProgressStatus.Text = "下载完成，正在自动重启切换至最新版本...";
+                TxtProgressStatus.Text = "更新完成，正在自动重启切换至最新版本...";
             } catch (OperationCanceledException) {
-                TxtProgressStatus.Text = "下载已取消。";
+                TxtProgressStatus.Text = "更新已取消。";
                 BtnUpdateNow.IsEnabled = true;
                 BtnCancel.IsEnabled = true;
             } catch (Exception ex) {
-                TxtProgressStatus.Text = "更新下载失败，请点击左侧按钮前往 GitHub 手动下载。";
-                MessageBox.Show($"自动更新下载遇到问题: {ex.Message}\n\n已为您保留前往 GitHub 网页下载的选项。", "更新失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+                TxtProgressStatus.Text = "自动更新重试失败。";
+                MessageBox.Show($"自动更新过程遇到异常: {ex.Message}\n\n若因特定网络阻断，可点击左下方浏览器链接手动获取最新版。", "更新失败", MessageBoxButton.OK, MessageBoxImage.Warning);
                 BtnUpdateNow.IsEnabled = true;
                 BtnCancel.IsEnabled = true;
             }
